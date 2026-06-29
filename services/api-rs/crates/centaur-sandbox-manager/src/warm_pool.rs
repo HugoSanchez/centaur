@@ -14,6 +14,7 @@ pub struct WarmPoolConfig {
     pub target_size: usize,
     pub replenish_interval: Duration,
     pub bootstrap_iron_control_principal: Option<String>,
+    pub max_running_sandboxes: Option<usize>,
 }
 
 pub struct WarmPoolManager {
@@ -121,6 +122,7 @@ impl WarmPoolManager {
                 .await?
                 .max(0) as usize,
         );
+        let needed = needed.min(self.available_running_slots().await?);
 
         for _ in 0..needed {
             let mut spec = (self.spec_factory)();
@@ -140,6 +142,27 @@ impl WarmPoolManager {
 
         Ok(())
     }
+
+    async fn available_running_slots(&self) -> Result<usize, WarmPoolError> {
+        let Some(max_running) = self.config.max_running_sandboxes else {
+            return Ok(usize::MAX);
+        };
+        let running = self
+            .manager
+            .list_observed()
+            .await?
+            .into_iter()
+            .filter(|observed| status_consumes_running_slot(&observed.status))
+            .count();
+        Ok(max_running.saturating_sub(running))
+    }
+}
+
+fn status_consumes_running_slot(status: &SandboxStatus) -> bool {
+    matches!(
+        status,
+        SandboxStatus::Created | SandboxStatus::Running | SandboxStatus::Unknown(_)
+    )
 }
 
 #[derive(Debug, Error)]
