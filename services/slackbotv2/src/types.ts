@@ -109,6 +109,8 @@ export type SlackbotV2Options = {
   idleTimeoutMs?: number
   logger?: Logger
   maxDurationMs?: number
+  /** Public/local MCP endpoint shown to users for MCP SSO setup. */
+  mcpEndpointUrl?: string
   postgresUrl?: string
   recoverRenderObligationsOnStart?: boolean
   /** Maximum Slack message age eligible for startup render recovery. */

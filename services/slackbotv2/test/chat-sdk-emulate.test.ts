@@ -112,6 +112,113 @@ afterAll(async () => {
 })
 
 describe('slackbotv2', () => {
+  it('shows MCP SSO setup from a Slack DM without handing off to an agent', async () => {
+    const waits: Promise<unknown>[] = []
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-slackbotv2-mcp-token-dm',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: 'D000000001',
+          team: TEAM_ID,
+          ts: '1780000100.000001',
+          text: '/mcp token'
+        }
+      }),
+      {},
+      waitUntilContext(waits)
+    )
+
+    expect(response.status).toBe(200)
+    await Promise.all(waits)
+    expect(codexApi.creates).toHaveLength(0)
+    expect(codexApi.appends).toHaveLength(0)
+    expect(codexApi.executes).toHaveLength(0)
+    const setupMessage = slackApi.calls.find(
+      call =>
+        call.method === 'chat.postMessage'
+        && stringField(call.body.text).includes('Centaur MCP uses console SSO now.')
+    )
+    expect(setupMessage).toBeDefined()
+    expect(setupMessage?.body.channel).toBe('D000000001')
+    expect(setupMessage?.body.text).toContain('/mcp')
+    expect(setupMessage?.body.text).not.toContain('Bearer ')
+  })
+
+  it('shows configured MCP public URL instead of the internal API URL', async () => {
+    const internalApiUrl = 'http://centaur-api-rs:8080'
+    bot = createTestBot({
+      apiUrl: internalApiUrl,
+      mcpEndpointUrl: 'http://localhost:3000',
+      fetch: (input, init) => {
+        const inputUrl = input instanceof Request ? input.url : input.toString()
+        const url = new URL(inputUrl)
+        return fetch(new URL(`${url.pathname}${url.search}`, `${codexApi.url}/`), init)
+      }
+    })
+    const waits: Promise<unknown>[] = []
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-slackbotv2-mcp-token-public-url',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: 'D000000001',
+          team: TEAM_ID,
+          ts: '1780000100.000003',
+          text: '/mcp token'
+        }
+      }),
+      {},
+      waitUntilContext(waits)
+    )
+
+    expect(response.status).toBe(200)
+    await Promise.all(waits)
+    const setupMessage = slackApi.calls.find(
+      call =>
+        call.method === 'chat.postMessage'
+        && stringField(call.body.text).includes('Centaur MCP uses console SSO now.')
+    )
+    expect(setupMessage?.body.text).toContain('Endpoint: http://localhost:3000/mcp')
+    expect(setupMessage?.body.text).not.toContain(internalApiUrl)
+  })
+
+  it('does not print MCP bearer tokens in shared channels', async () => {
+    const parent = await postUserMessage('MCP token request context.')
+    const mention = await postUserMessage(`<@${BOT_USER_ID}> /mcp token`, parent.ts)
+    const waits: Promise<unknown>[] = []
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-slackbotv2-mcp-token-channel',
+        event: {
+          type: 'app_mention',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: mention.ts,
+          thread_ts: parent.ts,
+          text: `<@${BOT_USER_ID}> /mcp token`
+        }
+      }),
+      {},
+      waitUntilContext(waits)
+    )
+
+    expect(response.status).toBe(200)
+    await Promise.all(waits)
+    expect(codexApi.creates).toHaveLength(0)
+    expect(codexApi.appends).toHaveLength(0)
+    expect(codexApi.executes).toHaveLength(0)
+    const text = await threadText(parent.ts)
+    expect(text).toContain('Centaur MCP uses console SSO now.')
+    expect(text).not.toContain('Bearer ')
+  })
+
   it('accepts Slack events on the legacy route', async () => {
     const parent = await postUserMessage('Legacy route context.')
     const mention = await postUserMessage(`<@${BOT_USER_ID}> use the legacy route`, parent.ts)
@@ -3705,7 +3812,7 @@ describe('slackbotv2', () => {
     expect(allowedBotChannelTranscripts[0]!.start.body).toEqual(
       expect.objectContaining({
         recipient_team_id: TEAM_ID,
-        recipient_user_id: 'UOTHERBOT'
+        recipient_user_id: 'BOTHERBOT'
       })
     )
   })
@@ -4447,6 +4554,7 @@ type StreamCall = {
   method:
     | 'assistant.threads.setStatus'
     | 'assistant.threads.setTitle'
+    | 'chat.postMessage'
     | 'chat.startStream'
     | 'chat.appendStream'
     | 'chat.stopStream'
@@ -4694,6 +4802,19 @@ async function handlePatchedSlackRequest(
         input.maxStreamStopChars
       )
     )
+    return
+  }
+  if (path === '/api/chat.postMessage') {
+    const body = await requestBody(request.clone())
+    const rawBody = await request.arrayBuffer()
+    const proxied = await fetch(new URL(`${path}${url.search}`, input.upstreamUrl), {
+      method: request.method,
+      headers: request.headers,
+      body: rawBody.byteLength > 0 ? rawBody : undefined
+    })
+    const payload = await proxied.json() as Record<string, unknown>
+    input.calls.push({ method: 'chat.postMessage', body: { ...body, ts: payload.ts } })
+    await sendWebResponse(res, Response.json(payload, { status: proxied.status }))
     return
   }
   if (path === '/api/conversations.replies') {

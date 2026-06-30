@@ -156,6 +156,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
 
   chat.onNewMention(async (thread, message) => {
     if (!isAllowedSlackMessage(message, options, logger)) return
+    if (await handleSlackMcpAuthRequest(thread, message, options)) return
     lateSlackFiles.rememberFilelessMention(thread, message)
     await handleSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
@@ -169,6 +170,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
 
   chat.onSubscribedMessage(async (thread, message) => {
     if (!isAllowedSlackMessage(message, options, logger)) return
+    if (await handleSlackMcpAuthRequest(thread, message, options)) return
     lateSlackFiles.rememberFilelessMention(thread, message)
     await handleSlackMessageHandoff(thread, message, {
       assistantStatusRequested: message.isMention === true,
@@ -395,6 +397,74 @@ function createHandoffTrace(
     startedAtMs: nowMs(),
     threadId: thread.id
   }
+}
+
+async function handleSlackMcpAuthRequest(
+  thread: Thread<SlackbotV2ThreadState>,
+  message: ChatMessage,
+  options: SlackbotV2Options
+): Promise<boolean> {
+  if (!isSlackMcpAuthRequest(message)) return false
+  const directMessage = isSlackDirectMessage(message)
+  if (!directMessage && message.isMention !== true) return false
+
+  const trace: SlackbotV2Trace = {
+    includeContext: false,
+    messageId: message.id,
+    mode: 'append',
+    openStream: false,
+    startedAtMs: nowMs(),
+    threadId: thread.id
+  }
+  await thread.post(slackMcpSsoMessage(options))
+  traceLog(options, 'slackbotv2_mcp_sso_info_sent', trace)
+  return true
+}
+
+function isSlackMcpAuthRequest(message: ChatMessage): boolean {
+  let text = normalizeSlackText(message.text)
+  if (message.isMention === true) {
+    text = text.replace(/^@[A-Z0-9]+\b[:,]?\s*/i, '')
+  }
+  text = text.replace(/^@centaur\b[:,]?\s*/i, '').trim()
+  return /^\/mcp\s+token$/i.test(text)
+}
+
+function isSlackDirectMessage(message: ChatMessage): boolean {
+  return slackMessageConversationId(message)?.startsWith('D') === true
+}
+
+function slackMessageConversationId(message: ChatMessage): string | undefined {
+  if (isJsonObject(message.raw)) {
+    const channel = stringValue(message.raw.channel)
+    if (channel) return channel
+  }
+  for (const segment of message.threadId.split(':').slice(1)) {
+    const first = segment.charAt(0)
+    if (first === 'C' || first === 'D' || first === 'G') return segment
+  }
+  return undefined
+}
+
+function slackMcpSsoMessage(options: SlackbotV2Options): string {
+  const endpoint = slackMcpEndpoint(options)
+  return [
+    'Centaur MCP uses console SSO now.',
+    `Endpoint: ${endpoint}`,
+    'Add this MCP server in your client and sign in with your Centaur console account.'
+  ].join('\n')
+}
+
+function slackMcpEndpoint(options: SlackbotV2Options): string {
+  const configured = options.mcpEndpointUrl?.trim()
+  const baseUrl = configured || options.apiUrl
+  const url = new URL(baseUrl)
+  if (!url.pathname || url.pathname === '/') {
+    url.pathname = '/mcp'
+  } else if (!url.pathname.replace(/\/+$/, '').endsWith('/mcp')) {
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}/mcp`
+  }
+  return url.toString()
 }
 
 function slackWebhookEventType(rawBody: string): string {
