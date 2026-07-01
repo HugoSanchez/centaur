@@ -11,8 +11,18 @@ module SlackRuntime
 
   module_function
 
+  # The Kubernetes client. Overridable in tests (mirrors
+  # SlackDm::SyncCredential#slack_api_http); defaults to the real KubeClient.
+  def client
+    @client || KubeClient
+  end
+
+  def client=(value)
+    @client = value
+  end
+
   def enabled?
-    KubeClient.in_cluster?
+    client.in_cluster?
   end
 
   def secret_name = ConsoleEnv["SLACK_RUNTIME_SECRET"].presence || "centaur-infra-env"
@@ -26,8 +36,8 @@ module SlackRuntime
     return :skipped unless enabled?
     raise Error, "no bot token to activate" if token.blank?
 
-    KubeClient.merge_patch_secret(secret_name, { secret_key => token })
-    KubeClient.restart_deployment(
+    client.merge_patch_secret(secret_name, { secret_key => token })
+    client.restart_deployment(
       slackbot_deployment,
       { "centaur.dev/slack-token-synced-at" => Time.now.utc.iso8601 }
     )
