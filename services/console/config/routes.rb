@@ -105,6 +105,7 @@ Rails.application.routes.draw do
   post "integrations/slack/install", to: "console/slack_integrations#install", as: :integrations_slack_install
   get  "integrations/slack/callback", to: "console/slack_integrations#callback", as: :integrations_slack_callback
   post "integrations/slack/check", to: "console/slack_integrations#check", as: :check_integrations_slack
+  delete "integrations/slack", to: "console/slack_integrations#disconnect", as: :disconnect_integrations_slack
 
   namespace :api do
     namespace :v1 do

@@ -82,6 +82,17 @@ module Console
       redirect_to console_slack_integration_path, alert: "Slack bot token check failed (#{e.reason})."
     end
 
+    def disconnect
+      installation = SlackInstallation.order(updated_at: :desc).first
+      if installation.nil?
+        return redirect_to console_slack_integration_path, alert: "No Slack workspace is connected."
+      end
+
+      name = installation.display_name
+      installation.destroy!
+      redirect_to console_slack_integration_path, notice: "Disconnected Slack workspace #{name}."
+    end
+
     private
 
     def load_status

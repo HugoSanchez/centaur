@@ -6,9 +6,17 @@
     <p class="page-subtitle">Connect a Slack workspace and verify the local event endpoint.</p>
   </div>
   <% if @configured %>
-    <%= button_to "Connect Slack", integrations_slack_install_path,
-          method: :post,
-          class: "btn-primary" %>
+    <% if @installation %>
+      <%= button_to "Disconnect", disconnect_integrations_slack_path,
+            method: :delete,
+            form: { data: { turbo_confirm: "Disconnect Slack workspace #{@installation.display_name}?" } },
+            class: "btn-secondary" %>
+    <% else %>
+      <%= button_to "Connect Slack", integrations_slack_install_path,
+            method: :post,
+            form: { data: { turbo: false } },
+            class: "btn-primary" %>
+    <% end %>
   <% end %>
 </div>
 
