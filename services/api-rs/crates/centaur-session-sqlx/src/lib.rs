@@ -3,8 +3,8 @@
 use std::str::FromStr;
 
 use centaur_session_core::{
-    ExecutionStatus, HarnessType, SandboxCapabilities, Session, SessionEvent, SessionExecution,
-    SessionMessage, SessionMessageInput, SessionStatus, ThreadKey, empty_object,
+    ExecutionStatus, HarnessType, MessageRole, SandboxCapabilities, Session, SessionEvent,
+    SessionExecution, SessionMessage, SessionMessageInput, SessionStatus, ThreadKey, empty_object,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -126,7 +126,7 @@ impl PgSessionStore {
     pub async fn get_session(&self, thread_key: &ThreadKey) -> Result<Session, SessionStoreError> {
         let row = sqlx::query_as::<_, SessionRow>(
             r#"
-            select thread_key, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
+            select thread_key, title, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
             from sessions
             where thread_key = $1
             "#,
@@ -139,6 +139,25 @@ impl PgSessionStore {
         })?;
 
         row.try_into()
+    }
+
+    pub async fn get_session_title(
+        &self,
+        thread_key: &ThreadKey,
+    ) -> Result<Option<String>, SessionStoreError> {
+        let title = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            select title
+            from sessions
+            where thread_key = $1
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+
+        Ok(title)
     }
 
     pub async fn append_messages(
@@ -176,6 +195,55 @@ impl PgSessionStore {
 
         tx.commit().await?;
         Ok(message_ids)
+    }
+
+    pub async fn title_generation_candidate(
+        &self,
+        thread_key: &ThreadKey,
+    ) -> Result<Option<Vec<Value>>, SessionStoreError> {
+        let parts = sqlx::query_scalar::<_, Value>(
+            r#"
+            select first_user.parts
+            from sessions s
+            join lateral (
+                select parts
+                from session_messages
+                where thread_key = s.thread_key and role = $2
+                order by created_at, message_id
+                limit 1
+            ) first_user on true
+            where s.thread_key = $1 and s.title is null
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .bind(MessageRole::User.as_ref())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(parts.map(|parts| match parts {
+            Value::Array(parts) => parts,
+            other => vec![other],
+        }))
+    }
+
+    pub async fn set_session_title_if_empty(
+        &self,
+        thread_key: &ThreadKey,
+        title: &str,
+    ) -> Result<bool, SessionStoreError> {
+        let result = sqlx::query(
+            r#"
+            update sessions
+            set title = $2, updated_at = now()
+            where thread_key = $1 and title is null
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .bind(title)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn list_messages(
@@ -618,7 +686,7 @@ impl PgSessionStore {
                 sandbox_observability_enabled = null,
                 updated_at = now()
             where thread_key = $1
-            returning thread_key, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
+            returning thread_key, title, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
             "#,
         )
         .bind(thread_key.as_str())
@@ -644,7 +712,7 @@ impl PgSessionStore {
                 sandbox_observability_enabled = $4,
                 updated_at = now()
             where thread_key = $1
-            returning thread_key, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
+            returning thread_key, title, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
             "#,
         )
         .bind(thread_key.as_str())
@@ -700,7 +768,7 @@ impl PgSessionStore {
                 status = $3,
                 updated_at = now()
             where thread_key = $1
-            returning thread_key, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
+            returning thread_key, title, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
             "#,
         )
         .bind(thread_key.as_str())
@@ -725,7 +793,7 @@ impl PgSessionStore {
             update sessions
             set iron_control_principal = $2, updated_at = now()
             where thread_key = $1
-            returning thread_key, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
+            returning thread_key, title, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
             "#,
         )
         .bind(thread_key.as_str())
@@ -833,7 +901,7 @@ impl PgSessionStore {
             update sessions
             set harness_thread_id = $2, updated_at = now()
             where thread_key = $1
-            returning thread_key, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
+            returning thread_key, title, sandbox_id, sandbox_repo_cache_enabled, sandbox_observability_enabled, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
             "#,
         )
         .bind(thread_key.as_str())
@@ -931,6 +999,7 @@ pub enum SessionStoreError {
 #[derive(Debug, FromRow)]
 struct SessionRow {
     thread_key: String,
+    title: Option<String>,
     sandbox_id: Option<String>,
     sandbox_repo_cache_enabled: Option<bool>,
     sandbox_observability_enabled: Option<bool>,
@@ -949,6 +1018,7 @@ impl TryFrom<SessionRow> for Session {
     fn try_from(row: SessionRow) -> Result<Self, Self::Error> {
         Ok(Self {
             thread_key: parse_persisted(row.thread_key)?,
+            title: row.title,
             sandbox_id: row.sandbox_id,
             sandbox_capabilities: match (
                 row.sandbox_repo_cache_enabled,
