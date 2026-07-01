@@ -99,6 +99,13 @@ Rails.application.routes.draw do
     end
   end
 
+  # Slack workspace installation flow. Start/check actions are admin-only console
+  # posts; callback is the browser redirect target registered in Slack.
+  get  "console/integrations/slack", to: "console/slack_integrations#show", as: :console_slack_integration
+  post "integrations/slack/install", to: "console/slack_integrations#install", as: :integrations_slack_install
+  get  "integrations/slack/callback", to: "console/slack_integrations#callback", as: :integrations_slack_callback
+  post "integrations/slack/check", to: "console/slack_integrations#check", as: :check_integrations_slack
+
   namespace :api do
     namespace :v1 do
       # Each secret type is addressable by opaque oid (member routes) or by an

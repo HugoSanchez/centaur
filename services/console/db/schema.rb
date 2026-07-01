@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_25_030000) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_01_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -343,6 +343,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_25_030000) do
     t.index ["static_secret_id"], name: "index_secret_sources_on_static_secret_id", unique: true
   end
 
+  create_table "slack_installations", force: :cascade do |t|
+    t.string "app_id"
+    t.text "authed_user_token"
+    t.jsonb "bot_scopes", default: [], null: false
+    t.text "bot_token"
+    t.string "bot_user_id"
+    t.datetime "created_at", null: false
+    t.string "enterprise_id"
+    t.string "enterprise_name"
+    t.bigint "installed_by_id"
+    t.string "team_id", null: false
+    t.string "team_name"
+    t.datetime "updated_at", null: false
+    t.jsonb "user_scopes", default: [], null: false
+    t.index ["installed_by_id"], name: "index_slack_installations_on_installed_by_id"
+    t.index ["team_id"], name: "index_slack_installations_on_team_id", unique: true
+  end
+
   create_table "static_secrets", force: :cascade do |t|
     t.bigint "broker_credential_id"
     t.datetime "created_at", null: false
@@ -426,6 +444,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_25_030000) do
   add_foreign_key "secret_sources", "oauth_token_secrets"
   add_foreign_key "secret_sources", "pg_dsn_secrets"
   add_foreign_key "secret_sources", "static_secrets"
+  add_foreign_key "slack_installations", "users", column: "installed_by_id"
   add_foreign_key "static_secrets", "broker_credentials"
   add_foreign_key "static_secrets", "users", column: "created_by_id"
   add_foreign_key "user_identities", "users"

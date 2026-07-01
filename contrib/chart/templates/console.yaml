@@ -161,6 +161,21 @@ spec:
                   name: {{ $secretEnv }}
                   key: {{ printf "%sIRON_CONTROL_GOOGLE_CLIENT_SECRET" $prefix }}
 {{- end }}
+{{- if $console.slackConnect.enabled }}
+            # Slack OAuth app credentials for the console "Connect Slack" flow.
+            # The signing secret remains Slackbot runtime config; OAuth provides
+            # bot/user tokens but not the signing secret.
+            - name: IRON_CONTROL_SLACK_CONNECT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretEnv }}
+                  key: {{ printf "%sIRON_CONTROL_SLACK_CONNECT_CLIENT_ID" $prefix }}
+            - name: IRON_CONTROL_SLACK_CONNECT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretEnv }}
+                  key: {{ printf "%sIRON_CONTROL_SLACK_CONNECT_CLIENT_SECRET" $prefix }}
+{{- end }}
             - name: RAILS_ENV
               value: {{ $console.railsEnv | quote }}
 {{- with $console.slackDmSync.oauthAppSlug }}
