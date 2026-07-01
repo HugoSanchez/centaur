@@ -1,12 +1,11 @@
 @import "tailwindcss";
 @config "../../../config/tailwind.config.js";
 
-/* Console form building blocks, matching the centaur/ink terminal aesthetic.
-   Three-level surface hierarchy: page (ink-900) < section card (ink-800) <
-   input (ink-700), so fields stay legible against their card. */
+/* Console form building blocks. The ink/zinc ramps are mapped in
+   tailwind.config.js so existing dark-theme utility names render as light UI. */
 @layer components {
   .form-section {
-    @apply rounded-lg border border-ink-600 bg-ink-800/80 p-5;
+    @apply rounded-lg border border-ink-600 bg-ink-850 p-5 shadow-sm;
   }
 
   .form-section-heading {
@@ -18,7 +17,7 @@
   }
 
   .form-input {
-    @apply w-full rounded border border-ink-500 bg-ink-700 px-3 py-2 text-sm text-zinc-50
+    @apply w-full rounded border border-ink-500 bg-ink-700 px-3 py-2 text-sm text-zinc-50 shadow-sm
            placeholder-zinc-500 focus:border-centaur-500 focus:outline-none focus:ring-1 focus:ring-centaur-500/50;
   }
 
@@ -27,13 +26,13 @@
   }
 
   .btn-primary {
-    @apply cursor-pointer rounded border border-centaur-500/40 bg-centaur-500/10 px-4 py-2 text-sm text-centaur-300
-           transition-colors hover:bg-centaur-500/20 hover:text-centaur-200;
+    @apply cursor-pointer rounded border border-centaur-500 bg-centaur-500 px-4 py-2 text-sm font-medium text-white
+           transition-colors hover:bg-centaur-600 hover:text-white;
   }
 
   .btn-secondary {
-    @apply cursor-pointer rounded border border-ink-600 px-3 py-1.5 text-sm text-zinc-400
-           transition-colors hover:border-centaur-500/40 hover:text-centaur-300;
+    @apply cursor-pointer rounded border border-ink-600 bg-ink-850 px-3 py-1.5 text-sm text-zinc-400
+           transition-colors hover:border-centaur-500/60 hover:text-centaur-300;
   }
 
   .page-title {
@@ -49,11 +48,11 @@
   }
 
   .console-panel {
-    @apply overflow-hidden rounded-xl border border-ink-600 bg-ink-850/60;
+    @apply overflow-hidden rounded-xl border border-ink-600 bg-ink-850 shadow-sm;
   }
 
   .console-scroll-panel {
-    @apply overflow-x-auto rounded-xl border border-ink-600 bg-ink-850/60;
+    @apply overflow-x-auto rounded-xl border border-ink-600 bg-ink-850 shadow-sm;
   }
 
   .console-table {
@@ -61,7 +60,7 @@
   }
 
   .console-table-head {
-    @apply bg-ink-800/80 text-left text-xs uppercase tracking-wider text-zinc-500;
+    @apply bg-ink-800 text-left text-xs uppercase tracking-wider text-zinc-500;
   }
 
   .console-th {
@@ -93,7 +92,7 @@
   }
 
   .empty-state {
-    @apply rounded-lg border border-dashed border-ink-600 bg-ink-850/40 px-5 py-6 text-sm text-zinc-600;
+    @apply rounded-lg border border-dashed border-ink-600 bg-ink-850 px-5 py-6 text-sm text-zinc-600;
   }
 
   .alert-error {
@@ -112,7 +111,7 @@
 
   /* Toggle chips (HTTP methods). .chip-on is declared after .chip so it wins. */
   .chip {
-    @apply cursor-pointer rounded border border-ink-500 bg-ink-700 px-2.5 py-1 text-xs
+    @apply cursor-pointer rounded border border-ink-500 bg-ink-850 px-2.5 py-1 text-xs
            font-medium text-zinc-300 transition-colors hover:border-centaur-500/50 hover:text-zinc-100;
   }
 
@@ -123,7 +122,7 @@
   /* Token input (paths): a bordered field holding removable chips plus a bare
      text entry that grows to fill the row. */
   .chip-field {
-    @apply flex flex-wrap items-center gap-1.5 rounded border border-ink-500 bg-ink-700 px-2 py-1.5
+    @apply flex flex-wrap items-center gap-1.5 rounded border border-ink-500 bg-ink-700 px-2 py-1.5 shadow-sm
            focus-within:border-centaur-500 focus-within:ring-1 focus-within:ring-centaur-500/50;
   }
 
@@ -139,4 +138,17 @@
   .chip-entry {
     @apply min-w-[7rem] flex-1 bg-transparent text-sm text-zinc-50 placeholder-zinc-500 focus:outline-none;
   }
+}
+
+@layer utilities {
+  .text-emerald-300 { color: #047857; }
+  .text-amber-200\/90 { color: rgb(146 64 14 / 0.9); }
+  .text-amber-300 { color: #b45309; }
+  .text-amber-300\/80 { color: rgb(180 83 9 / 0.8); }
+  .text-red-300 { color: #b91c1c; }
+  .text-red-400 { color: #dc2626; }
+  .text-sky-300 { color: #0369a1; }
+
+  .hover\:text-red-300:hover { color: #b91c1c; }
+  .hover\:text-red-400:hover { color: #dc2626; }
 }
