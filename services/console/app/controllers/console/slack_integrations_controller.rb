@@ -57,7 +57,17 @@ module Console
 
       response = SlackConnect.exchange_code(code: params[:code], redirect_uri: slack_callback_redirect_uri)
       installation = SlackConnect.upsert_installation!(response, installed_by: current_user)
-      redirect_to console_slack_integration_path, notice: "Connected Slack workspace #{installation.display_name}."
+
+      case activate_slack_runtime(installation)
+      when :synced
+        redirect_to console_slack_integration_path,
+                    notice: "Connected Slack workspace #{installation.display_name}. The bot is restarting and will be live in a moment."
+      when :failed
+        redirect_to console_slack_integration_path,
+                    alert: "Connected Slack workspace #{installation.display_name}, but activating the bot failed. Try “Check token” shortly, or reconnect."
+      else
+        redirect_to console_slack_integration_path, notice: "Connected Slack workspace #{installation.display_name}."
+      end
     rescue SlackConnect::Error => e
       redirect_to console_slack_integration_path, alert: "Slack connection failed (#{e.reason})."
     rescue ActiveRecord::RecordInvalid => e
@@ -94,6 +104,17 @@ module Console
     end
 
     private
+
+    # Push the connected bot token into the running slackbot. Returns :synced,
+    # :skipped (off-cluster), or :failed. Never raises -- a Kubernetes problem
+    # must not undo a successful connection; the token is stored and can be
+    # re-activated by reconnecting.
+    def activate_slack_runtime(installation)
+      SlackRuntime.sync_bot_token!(installation.bot_token)
+    rescue SlackRuntime::Error => e
+      Rails.logger.error { "slack runtime activation failed: #{e.message}" }
+      :failed
+    end
 
     def load_status
       @installation = SlackInstallation.order(updated_at: :desc).first
