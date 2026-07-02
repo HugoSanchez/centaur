@@ -54,13 +54,17 @@ module SlackConnect
 
   def authorization_url(redirect_uri:, state:)
     uri = URI.parse(AUTHORIZATION_ENDPOINT)
-    uri.query = URI.encode_www_form(
+    params = {
       "client_id" => client_id,
       "scope" => bot_scopes.join(","),
-      "user_scope" => user_scopes.join(","),
       "redirect_uri" => redirect_uri,
       "state" => state
-    )
+    }
+    # Omit user_scope entirely when no user scopes are configured (e.g.
+    # SLACK_CONNECT_USER_SCOPES=none) so the install prompt asks only for the
+    # bot's permissions.
+    params["user_scope"] = user_scopes.join(",") if user_scopes.any?
+    uri.query = URI.encode_www_form(params)
     uri.to_s
   end
 
@@ -113,6 +117,10 @@ module SlackConnect
   def env_list(suffix, fallback)
     raw = ConsoleEnv[suffix].presence
     return fallback if raw.blank?
+    # Explicit opt-out: an env value cannot be distinguished from "unset" when
+    # blank (blank falls back to the defaults), so "none" is the sentinel for
+    # "request no scopes of this kind".
+    return [] if raw.strip.casecmp("none").zero?
     scope_list(raw)
   end
 

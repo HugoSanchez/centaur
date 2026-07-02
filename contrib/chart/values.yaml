@@ -111,6 +111,10 @@ console:
   # Secret so an admin can click "Connect Slack" instead of pasting bot tokens.
   slackConnect:
     enabled: false
+  # Additional plain (non-secret) env vars for the console container, e.g.
+  # CENTAUR_CONSOLE_SLACK_CONNECT_BOT_SCOPES to narrow the OAuth install
+  # prompt. Secrets belong in the shared infra Secret, not here.
+  extraEnv: {}
   # OAuth app slug whose user-level Slack credentials are used by the DM sync
   # worker. Keep this aligned with the Console OAuth app users authorize.
   slackDmSync:

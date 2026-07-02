@@ -39,3 +39,6 @@
 
 # Overmind process-manager socket
 /.overmind.sock
+
+# Local test-run gem install path (see repo runbooks)
+/.bundle-vendor

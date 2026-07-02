@@ -89,8 +89,12 @@
     <div>
       <h3 class="mb-2 text-xs uppercase tracking-wider text-zinc-500">User token</h3>
       <div class="flex flex-wrap gap-2">
-        <% @user_scopes.each do |scope| %>
-          <span class="label-chip"><%= scope %></span>
+        <% if @user_scopes.any? %>
+          <% @user_scopes.each do |scope| %>
+            <span class="label-chip"><%= scope %></span>
+          <% end %>
+        <% else %>
+          <span class="text-sm text-zinc-500">None requested</span>
         <% end %>
       </div>
     </div>
