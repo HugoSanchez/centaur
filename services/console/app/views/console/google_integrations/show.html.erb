@@ -1,0 +1,76 @@
+<% content_for :title, "Google · Centaur Console" %>
+
+<div class="mb-8 flex items-start justify-between gap-6">
+  <div>
+    <h1 class="page-title">Google</h1>
+    <p class="page-subtitle">Connect a Google account so agents can use Drive, Docs, Sheets, and Calendar.</p>
+  </div>
+  <% if @configured %>
+    <% if @credential %>
+      <%= button_to "Disconnect", disconnect_integrations_google_path,
+            method: :delete,
+            form: { data: { turbo_confirm: "Disconnect Google account #{@credential.provider_email.presence || @credential.name}?" } },
+            class: "btn-secondary" %>
+    <% else %>
+      <%= link_to "Connect Google", @connect_url,
+            data: { turbo: false },
+            class: "btn-primary" %>
+    <% end %>
+  <% end %>
+</div>
+
+<% unless @configured %>
+  <div class="alert-error">
+    Google is not configured. An operator must register a Google OAuth app with the
+    slug <code>google</code> under <%= link_to "OAuth apps", console_oauth_apps_path, class: "underline" %>
+    (client ID/secret from Google Cloud, plus the allowed scopes).
+  </div>
+<% end %>
+
+<div class="grid gap-6 lg:grid-cols-2">
+  <section class="form-section">
+    <h2 class="form-section-heading">Connection</h2>
+    <% if @credential %>
+      <dl class="space-y-3 text-sm">
+        <div>
+          <dt class="text-xs uppercase tracking-wider text-zinc-500">Account</dt>
+          <dd class="mt-1 text-zinc-100"><%= @credential.provider_email.presence || @credential.name %></dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wider text-zinc-500">Status</dt>
+          <dd class="mt-1 text-zinc-300"><%= @credential.dead? ? "Needs reconnect" : "Connected" %></dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wider text-zinc-500">Last updated</dt>
+          <dd class="mt-1 text-zinc-300"><%= local_time(@credential.updated_at, relative: true) %></dd>
+        </div>
+      </dl>
+    <% elsif @configured %>
+      <p class="text-sm text-zinc-500">No Google account is connected yet. Click <strong>Connect Google</strong> to grant access.</p>
+    <% else %>
+      <p class="text-sm text-zinc-500">Configure the Google OAuth app first.</p>
+    <% end %>
+  </section>
+
+  <section class="form-section">
+    <h2 class="form-section-heading">Google app URL</h2>
+    <div class="space-y-4 text-sm">
+      <div>
+        <div class="form-label">Authorized redirect URI</div>
+        <code class="block break-all rounded border border-ink-600 bg-ink-850 px-3 py-2 text-xs text-zinc-100"><%= @callback_url || "—" %></code>
+        <p class="mt-2 text-xs text-zinc-500">Register this in the Google Cloud OAuth client's "Authorized redirect URIs".</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<% if @credential && @allowed_scopes.any? %>
+  <section class="form-section mt-6">
+    <h2 class="form-section-heading">Granted scopes</h2>
+    <div class="flex flex-wrap gap-2">
+      <% Array(@credential.scopes).each do |scope| %>
+        <span class="label-chip"><%= scope %></span>
+      <% end %>
+    </div>
+  </section>
+<% end %>

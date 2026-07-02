@@ -44,10 +44,11 @@
                   ["oauth apps", console_oauth_apps_path]
                 ] %>
                 <% nav << ["slack", console_slack_integration_path] if current_user&.admin? %>
+                <% nav << ["google", console_google_integration_path] if current_user&.admin? %>
                 <% nav << ["users", console_users_path] if current_user&.admin? %>
                 <% nav << ["ETLs", console_etls_path] %>
                 <% nav.each do |name, path| %>
-                  <% active = request.path == path || (name == "principals" && request.path.start_with?("/console/principals")) || (name == "roles" && request.path.start_with?("/console/roles")) || (name == "slack" && request.path.start_with?("/console/integrations/slack")) || (name == "ETLs" && request.path.start_with?("/console/etls")) %>
+                  <% active = request.path == path || (name == "principals" && request.path.start_with?("/console/principals")) || (name == "roles" && request.path.start_with?("/console/roles")) || (name == "slack" && request.path.start_with?("/console/integrations/slack")) || (name == "google" && request.path.start_with?("/console/integrations/google")) || (name == "ETLs" && request.path.start_with?("/console/etls")) %>
                   <a href="<%= path %>"
                      class="px-4 py-2 transition-colors <%= active ? "text-centaur-400" : "text-zinc-400 hover:text-zinc-100" %>">
                     <%= name == "ETLs" ? name : name.capitalize %>
