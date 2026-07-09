@@ -1,0 +1,27 @@
+[project]
+name = "memory"
+description = "The user's personal memory: hybrid BM25 + embedding search over their history (email, chat, meeting notes, docs) and agent-written pages. Search this BEFORE web search or other tools for questions about the user's history, work, people, projects, decisions, or preferences. Write durable new facts as pages."
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.30.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+    "typer>=0.12.0",
+]
+
+[project.scripts]
+memory = "memory.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.hatch.build.targets.wheel.sources]
+"." = "memory"
+
+[tool.centaur]
+module = "client.py"
