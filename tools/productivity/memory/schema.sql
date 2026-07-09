@@ -1,7 +1,8 @@
--- Reference schema for the `memory` tool. These tables are created and owned by
--- the operator (hand-applied via psql for the spike; a proper sqlx migration is
--- post-spike hardening). The tool NEVER creates them -- it only reads/writes
--- rows. They live in the SAME Postgres database `company_context` uses
+-- Schema for the `memory` tool. Applied by the provisioner (VERSO_PILOT mode
+-- runs this file against the instance's ai_v2 via psql on every provision;
+-- it is idempotent -- the BM25 indexes are rebuilt, everything else is
+-- IF NOT EXISTS). A proper sqlx migration is post-spike hardening. The tool
+-- NEVER creates these tables -- it only reads/writes rows. They live in the SAME Postgres database `company_context` uses
 -- (ParadeDB image: pg_search 0.23.0 + pgvector 0.8.1 both installed).
 --
 -- The BM25 index DDL below copies the exact `USING bm25 (...) WITH (...)` idiom
@@ -16,7 +17,7 @@ CREATE EXTENSION IF NOT EXISTS vector;      -- pgvector; already installed, idem
 -- documents in ranking.
 CREATE TABLE IF NOT EXISTS memory_pages (
     slug        text PRIMARY KEY,
-    title       text,
+    title       text NOT NULL DEFAULT '',
     content     text NOT NULL,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now()
@@ -29,14 +30,20 @@ CREATE TABLE IF NOT EXISTS memory_documents (
     source      text NOT NULL,
     stream      text NOT NULL DEFAULT '',
     source_ref  text NOT NULL,
-    title       text,
+    title       text NOT NULL DEFAULT '',
     content     text NOT NULL,
     occurred_at timestamptz,
     metadata    jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz,
+    CHECK (source <> ''),
+    CHECK (source_ref <> ''),
     UNIQUE (source, source_ref)
 );
+
+-- Recency scans per source (ingest watermarks, `memory list`).
+CREATE INDEX IF NOT EXISTS idx_memory_documents_source_time
+    ON memory_documents (source, occurred_at DESC);
 
 -- Vector index over chunks of pages+documents (filled by the Step-2 backfill
 -- workflow, never by this tool). `kind` is 'page' | 'doc'; `ref` is the page
@@ -48,7 +55,8 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
     model         text NOT NULL,
     source_stamp  text NOT NULL,
     embedding     vector(384) NOT NULL,
-    PRIMARY KEY (kind, ref, chunk)
+    PRIMARY KEY (kind, ref, chunk),
+    CHECK (kind IN ('page', 'doc'))
 );
 
 -- Watermarks for cloud ingestion (Step 2). Not touched by this tool.
