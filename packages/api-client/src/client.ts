@@ -114,6 +114,114 @@ export interface StreamEvent {
   data: Record<string, unknown>;
 }
 
+export type SessionHarnessType = "codex" | "amp" | "claudecode";
+
+export type SessionMessageRole = "user" | "assistant" | "system" | "tool";
+
+export interface SessionRecord {
+  thread_key: string;
+  sandbox_id?: string | null;
+  harness_type: SessionHarnessType;
+  harness_thread_id?: string | null;
+  persona_id?: string | null;
+  status: string;
+  iron_control_principal?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateSessionOptions {
+  threadKey: string;
+  harnessType: SessionHarnessType;
+  personaId?: string | null;
+  metadata?: Record<string, unknown>;
+  onHarnessConflict?: "reject" | "restart";
+}
+
+export interface CreateSessionResult extends SessionRecord {
+  harness_switched: boolean;
+}
+
+export interface AppendSessionMessageInput {
+  clientMessageId?: string | null;
+  role?: SessionMessageRole;
+  parts: InputContentBlock[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface AppendSessionMessagesOptions {
+  threadKey: string;
+  messages: AppendSessionMessageInput[];
+}
+
+export interface ExecuteSessionOptions {
+  threadKey: string;
+  idempotencyKey?: string | null;
+  metadata?: Record<string, unknown>;
+  inputLines?: string[];
+  text?: string;
+  content?: InputContentBlock[];
+  model?: string;
+  provider?: string;
+  reasoning?: string;
+  idleTimeoutMs?: number;
+  maxDurationMs?: number;
+}
+
+export interface ExecuteSessionResult {
+  ok: boolean;
+  execution_id: string;
+  thread_key: string;
+  status: string;
+}
+
+export interface SessionTurnOptions {
+  threadKey: string;
+  text: string;
+  harnessType: SessionHarnessType;
+  model?: string;
+  provider?: string;
+  reasoning?: string;
+  personaId?: string | null;
+  metadata?: Record<string, unknown>;
+  messageId?: string | null;
+  restartOnHarnessConflict?: boolean;
+  idleTimeoutMs?: number;
+  maxDurationMs?: number;
+}
+
+export interface SessionTurnResult {
+  session: CreateSessionResult;
+  messageIds: string[];
+  execution: ExecuteSessionResult;
+}
+
+export function buildSessionInputLine(opts: {
+  text?: string;
+  content?: InputContentBlock[];
+  threadKey?: string;
+  model?: string;
+  provider?: string;
+  reasoning?: string;
+  metadata?: Record<string, unknown>;
+  clientMessageId?: string | null;
+}): string {
+  const content = opts.content ?? [{ type: "text" as const, text: opts.text ?? "" }];
+  return JSON.stringify({
+    type: "user",
+    ...(opts.threadKey ? { thread_key: opts.threadKey } : {}),
+    ...(opts.metadata ? { trace_metadata: opts.metadata } : {}),
+    ...(opts.clientMessageId ? { client_user_message_id: opts.clientMessageId } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.provider ? { provider: opts.provider } : {}),
+    ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+    message: {
+      role: "user",
+      content,
+    },
+  });
+}
+
 export class CentaurClient {
   readonly http: AxiosInstance;
   private log?: { info: Function; warn: Function; error: Function };
@@ -135,6 +243,121 @@ export class CentaurClient {
   private get authHeader(): string {
     return (this.http.defaults.headers["Authorization"] ??
       this.http.defaults.headers.common?.["Authorization"]) as string;
+  }
+
+  async createSession(opts: CreateSessionOptions): Promise<CreateSessionResult> {
+    const { data } = await this.http.post(`/api/session/${encodeURIComponent(opts.threadKey)}`, {
+      harness_type: opts.harnessType,
+      persona_id: opts.personaId ?? null,
+      metadata: opts.metadata,
+      ...(opts.onHarnessConflict ? { on_harness_conflict: opts.onHarnessConflict } : {}),
+    });
+    return data as CreateSessionResult;
+  }
+
+  async appendSessionMessages(
+    opts: AppendSessionMessagesOptions,
+  ): Promise<{ ok: boolean; message_ids: string[] }> {
+    const { data } = await this.http.post(
+      `/api/session/${encodeURIComponent(opts.threadKey)}/messages`,
+      {
+        messages: opts.messages.map((message) => ({
+          client_message_id: message.clientMessageId ?? null,
+          role: message.role ?? "user",
+          parts: message.parts,
+          metadata: message.metadata ?? {},
+        })),
+      },
+    );
+    return data as { ok: boolean; message_ids: string[] };
+  }
+
+  async executeSession(opts: ExecuteSessionOptions): Promise<ExecuteSessionResult> {
+    const metadata = opts.metadata ?? {};
+    const inputLines = opts.inputLines ?? [
+      buildSessionInputLine({
+        text: opts.text,
+        content: opts.content,
+        threadKey: opts.threadKey,
+        model: opts.model,
+        provider: opts.provider,
+        reasoning: opts.reasoning,
+        metadata,
+        clientMessageId: opts.idempotencyKey,
+      }),
+    ];
+    const { data } = await this.http.post(
+      `/api/session/${encodeURIComponent(opts.threadKey)}/execute`,
+      {
+        idempotency_key: opts.idempotencyKey ?? null,
+        metadata,
+        input_lines: inputLines,
+        idle_timeout_ms: opts.idleTimeoutMs,
+        max_duration_ms: opts.maxDurationMs,
+      },
+    );
+    return data as ExecuteSessionResult;
+  }
+
+  async sendSessionTurn(opts: SessionTurnOptions): Promise<SessionTurnResult> {
+    const session = await this.createSession({
+      threadKey: opts.threadKey,
+      harnessType: opts.harnessType,
+      personaId: opts.personaId,
+      metadata: opts.metadata,
+      onHarnessConflict: opts.restartOnHarnessConflict ? "restart" : undefined,
+    });
+    const appended = await this.appendSessionMessages({
+      threadKey: opts.threadKey,
+      messages: [{
+        clientMessageId: opts.messageId,
+        role: "user",
+        parts: [{ type: "text", text: opts.text }],
+        metadata: opts.metadata,
+      }],
+    });
+    const execution = await this.executeSession({
+      threadKey: opts.threadKey,
+      idempotencyKey: opts.messageId,
+      metadata: opts.metadata,
+      text: opts.text,
+      model: opts.model,
+      provider: opts.provider,
+      reasoning: opts.reasoning,
+      idleTimeoutMs: opts.idleTimeoutMs,
+      maxDurationMs: opts.maxDurationMs,
+    });
+    return {
+      session,
+      messageIds: appended.message_ids,
+      execution,
+    };
+  }
+
+  async *streamSessionEvents(opts: {
+    threadKey: string;
+    afterEventId?: number;
+    executionId?: string;
+    signal?: AbortSignal;
+  }): AsyncGenerator<StreamEvent, void, undefined> {
+    const params = new URLSearchParams();
+    if (opts.afterEventId !== undefined) params.set("after_event_id", String(opts.afterEventId));
+    if (opts.executionId) params.set("execution_id", opts.executionId);
+
+    const url = `${this.http.defaults.baseURL}/api/session/${encodeURIComponent(opts.threadKey)}/events?${params.toString()}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: this.authHeader,
+      },
+      signal: opts.signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`/api/session/{thread}/events failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+    yield* parseEventStream(res.body);
   }
 
   async spawn(opts: SpawnOptions): Promise<SpawnResult> {
@@ -270,26 +493,7 @@ export class CentaurClient {
       const text = await res.text().catch(() => "");
       throw new Error(`/agent/threads/{thread}/events failed (${res.status}): ${text.slice(0, 300)}`);
     }
-    if (!res.body) return;
-
-    const stream = (res.body as ReadableStream<Uint8Array>)
-      .pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>)
-      .pipeThrough(new EventSourceParserStream());
-
-    for await (const event of stream as unknown as AsyncIterable<EventSourceMessage>) {
-      if (!event.data || event.data === "[DONE]") continue;
-      let parsed: Record<string, unknown> = { type: "unknown", raw: event.data };
-      try {
-        parsed = JSON.parse(event.data) as Record<string, unknown>;
-      } catch {
-        // keep raw fallback
-      }
-      yield {
-        eventId: Number(event.id || 0),
-        eventKind: event.event || "message",
-        data: parsed,
-      };
-    }
+    yield* parseEventStream(res.body);
   }
 
   async getExecution(executionId: string) {
@@ -415,5 +619,30 @@ export class CentaurClient {
   async getStatus(threadKey: string) {
     const { data } = await this.http.get("/agent/status", { params: { key: threadKey } });
     return data as Record<string, unknown>;
+  }
+}
+
+async function* parseEventStream(
+  body: ReadableStream<Uint8Array> | null,
+): AsyncGenerator<StreamEvent, void, undefined> {
+  if (!body) return;
+
+  const stream = body
+    .pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>)
+    .pipeThrough(new EventSourceParserStream());
+
+  for await (const event of stream as unknown as AsyncIterable<EventSourceMessage>) {
+    if (!event.data || event.data === "[DONE]") continue;
+    let parsed: Record<string, unknown> = { type: "unknown", raw: event.data };
+    try {
+      parsed = JSON.parse(event.data) as Record<string, unknown>;
+    } catch {
+      // keep raw fallback
+    }
+    yield {
+      eventId: Number(event.id || 0),
+      eventKind: event.event || "message",
+      data: parsed,
+    };
   }
 }

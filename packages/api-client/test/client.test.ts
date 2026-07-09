@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CentaurClient, type StreamEvent } from "../src/client";
+import {
+  CentaurClient,
+  buildSessionInputLine,
+  type StreamEvent,
+} from "../src/client";
+import {
+  DEFAULT_HARNESS_MODEL_ID,
+  HARNESS_MODEL_GROUPS,
+  harnessModelPayload,
+} from "../src/model-catalog";
 
 async function collectEvents(events: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
   const collected: StreamEvent[] = [];
@@ -122,6 +131,172 @@ describe("CentaurClient", () => {
         cancel_inflight: true,
       },
     );
+  });
+
+  it("posts the expected session turn payload for selected harness and model", async () => {
+    const client = new CentaurClient({
+      apiUrl: "http://api.local",
+      apiKey: "test-key",
+    });
+    const postMock = vi.spyOn(client.http, "post")
+      .mockResolvedValueOnce({
+        data: {
+          thread_key: "slack:C123:1700000000.000100",
+          harness_type: "claudecode",
+          harness_switched: true,
+          status: "active",
+        },
+      })
+      .mockResolvedValueOnce({ data: { ok: true, message_ids: ["msg-1"] } })
+      .mockResolvedValueOnce({
+        data: {
+          ok: true,
+          execution_id: "exe-1",
+          thread_key: "slack:C123:1700000000.000100",
+          status: "running",
+        },
+      });
+
+    await expect(client.sendSessionTurn({
+      threadKey: "slack:C123:1700000000.000100",
+      text: "ship it",
+      harnessType: "claudecode",
+      model: "claude-sonnet-4-6",
+      messageId: "client-msg-1",
+      restartOnHarnessConflict: true,
+      metadata: { source: "verso" },
+      idleTimeoutMs: 60_000,
+      maxDurationMs: 180_000,
+    })).resolves.toMatchObject({
+      messageIds: ["msg-1"],
+      execution: { execution_id: "exe-1" },
+      session: { harness_switched: true },
+    });
+
+    expect(postMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/session/slack%3AC123%3A1700000000.000100",
+      {
+        harness_type: "claudecode",
+        persona_id: null,
+        metadata: { source: "verso" },
+        on_harness_conflict: "restart",
+      },
+    );
+    expect(postMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/session/slack%3AC123%3A1700000000.000100/messages",
+      {
+        messages: [{
+          client_message_id: "client-msg-1",
+          role: "user",
+          parts: [{ type: "text", text: "ship it" }],
+          metadata: { source: "verso" },
+        }],
+      },
+    );
+
+    const executeBody = postMock.mock.calls[2]?.[1] as {
+      input_lines: string[];
+      idempotency_key: string;
+      idle_timeout_ms: number;
+      max_duration_ms: number;
+    };
+    expect(postMock.mock.calls[2]?.[0]).toBe(
+      "/api/session/slack%3AC123%3A1700000000.000100/execute",
+    );
+    expect(executeBody.idempotency_key).toBe("client-msg-1");
+    expect(executeBody.idle_timeout_ms).toBe(60_000);
+    expect(executeBody.max_duration_ms).toBe(180_000);
+    expect(JSON.parse(executeBody.input_lines[0]!)).toMatchObject({
+      type: "user",
+      thread_key: "slack:C123:1700000000.000100",
+      model: "claude-sonnet-4-6",
+      trace_metadata: { source: "verso" },
+      client_user_message_id: "client-msg-1",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "ship it" }],
+      },
+    });
+  });
+
+  it("builds codex input lines with provider and reasoning overrides", () => {
+    expect(JSON.parse(buildSessionInputLine({
+      threadKey: "chat:1",
+      text: "hello",
+      model: "gpt-5.5",
+      provider: "openai",
+      reasoning: "high",
+    }))).toEqual({
+      type: "user",
+      thread_key: "chat:1",
+      model: "gpt-5.5",
+      provider: "openai",
+      reasoning: "high",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "hello" }],
+      },
+    });
+  });
+
+  it("streams session API events from the deployed POC route shape", async () => {
+    const fetchMock = vi.fn(async () => sseResponse([
+      "id: 1",
+      "event: session.output.line",
+      'data: {"msg":"hi"}',
+      "",
+      "id: 2",
+      "event: session.execution_completed",
+      'data: {"result_text":"done"}',
+      "",
+      "",
+    ].join("\n")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new CentaurClient({
+      apiUrl: "http://api.local",
+      apiKey: "test-key",
+    });
+
+    await expect(collectEvents(client.streamSessionEvents({
+      threadKey: "slack:C123:1700000000.000100",
+      executionId: "exe-1",
+      afterEventId: 0,
+    }))).resolves.toEqual([
+      {
+        eventId: 1,
+        eventKind: "session.output.line",
+        data: { msg: "hi" },
+      },
+      {
+        eventId: 2,
+        eventKind: "session.execution_completed",
+        data: { result_text: "done" },
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://api.local/api/session/slack%3AC123%3A1700000000.000100/events?after_event_id=0&execution_id=exe-1",
+      expect.objectContaining({
+        method: "GET",
+        headers: { Authorization: "Bearer test-key" },
+      }),
+    );
+  });
+
+  it("exposes selector catalog payloads for the default model", () => {
+    expect(HARNESS_MODEL_GROUPS.map((group) => group.id)).toEqual([
+      "claudecode",
+      "codex",
+      "amp",
+    ]);
+    expect(harnessModelPayload(DEFAULT_HARNESS_MODEL_ID)).toEqual({
+      harnessType: "codex",
+      model: "gpt-5.5",
+      provider: "openai",
+    });
   });
 
   it("throws useful errors for non-OK event stream responses", async () => {
