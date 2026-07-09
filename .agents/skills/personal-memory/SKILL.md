@@ -50,7 +50,7 @@ A write reports whether the page was `created` or `updated`. Confirm briefly to 
 
 ## Answering rules
 
-- When memory informs an answer, weave it in naturally and cite which page or `doc:<id>` it came from where it matters.
+- When memory informs an answer, weave it in naturally and attribute it in HUMAN terms — the entry's title, source, and date (e.g. "your All-Hands meeting notes from July 8", "a Slack thread in #eng-cloud on July 9", "the *Prover Network Services Agreement* Google Doc" — include its link when the entry carries one). NEVER show raw internal refs like `doc:1843` to the user; those ids exist only for your own follow-up `memory page` reads.
 - If a search returns nothing relevant after a reworded retry, proceed normally without dwelling on it.
 - Do not dump long private documents or message history into the reply. Summarize narrowly; quote only short snippets when genuinely useful.
 - Curated pages are authoritative over raw documents when they conflict (the tool already ranks pages above documents).

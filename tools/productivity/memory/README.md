@@ -34,4 +34,8 @@ the database; it defaults to the right one).
   Search first; UPDATE an existing page rather than creating a near-duplicate.
 - `list`, `status` — inventory and diagnostics.
 
-Cite the page/doc that informed your answer.
+When memory informs an answer, attribute it in HUMAN terms — the entry's title,
+source, and date ("your All-Hands notes from July 8", "a Slack thread in
+#eng-cloud on July 9"), including its link when the entry carries one. NEVER
+show raw internal refs like `doc:1028` to the user — those ids are only for
+your own follow-up `memory page doc:ID` reads.
