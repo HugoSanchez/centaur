@@ -8,7 +8,7 @@ name: Publish Fork Console
 
 on:
   push:
-    branches: [smb-console-mvp]
+    branches: [fork-main]
     paths:
       - services/console/**
       - .github/workflows/publish-fork-console.yml
