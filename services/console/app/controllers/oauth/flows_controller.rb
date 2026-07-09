@@ -58,7 +58,8 @@ module Oauth
       # :lax is required -- the callback arrives via a top-level cross-site
       # redirect from the IdP, which Lax permits for GET.
       cookies.encrypted[FLOW_COOKIE] = {
-        value: { "nonce" => nonce, "code_verifier" => code_verifier }.to_json,
+        value: { "nonce" => nonce, "code_verifier" => code_verifier,
+                 "return_to" => safe_return_to(params[:return_to]) }.to_json,
         expires: FLOW_TTL.from_now, httponly: true, same_site: :lax
       }
 
@@ -80,6 +81,10 @@ module Oauth
       if flow.nil? || flow["nonce"] != state["nonce"]
         return render_result(:error, status: :bad_request, message: "This flow expired or was started in another browser. Start again.")
       end
+
+      # A friendly caller (e.g. the console "Connect Google" page) may ask to land
+      # back on its own page instead of the generic result screen.
+      @return_to = safe_return_to(flow["return_to"])
 
       # The user declined (or another IdP-side error).
       if params[:error].present?
@@ -246,11 +251,33 @@ module Oauth
     # :error; the matching HTTP status defaults sensibly but callers override it
     # for the 4xx pre-consent rejections.
     def render_result(kind, status: nil, message: nil, identity: nil, **)
+      # A friendly caller passed a same-origin return_to: land back there with a
+      # flash instead of the standalone result page.
+      if @return_to
+        flash_kind = kind == :success ? :notice : :alert
+        summary =
+          if kind == :success
+            "Connected #{@provider&.display_name || 'account'}#{identity && identity[:email] ? " #{identity[:email]}" : ''}."
+          else
+            message || "Consent was not completed."
+          end
+        return redirect_to @return_to, flash: { flash_kind => summary }
+      end
+
       @kind = kind
       @message = message
       @identity = identity
       status ||= (kind == :success ? :ok : :unprocessable_entity)
       render :result, status: status
+    end
+
+    # Only same-origin relative paths may be a post-consent redirect target --
+    # never an absolute or protocol-relative URL (open-redirect guard). Anything
+    # else returns nil, so the flow falls back to the result page.
+    def safe_return_to(raw)
+      return nil if raw.blank?
+      return nil unless raw.start_with?("/") && !raw.start_with?("//")
+      raw
     end
   end
 end

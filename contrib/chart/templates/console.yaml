@@ -46,7 +46,10 @@ spec:
       labels:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "console") | nindent 8 }}
     spec:
-      automountServiceAccountToken: false
+      # The Slack Connect bridge needs the SA token to call the Kubernetes API
+      # (patch the infra secret + restart the slackbot on connect); console-rbac
+      # scopes that token to exactly those two operations. Off otherwise.
+      automountServiceAccountToken: {{ $console.slackConnect.enabled | default false }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
 {{ toYaml . | nindent 8 }}
@@ -161,6 +164,21 @@ spec:
                   name: {{ $secretEnv }}
                   key: {{ printf "%sIRON_CONTROL_GOOGLE_CLIENT_SECRET" $prefix }}
 {{- end }}
+{{- if $console.slackConnect.enabled }}
+            # Slack OAuth app credentials for the console "Connect Slack" flow.
+            # The signing secret remains Slackbot runtime config; OAuth provides
+            # bot/user tokens but not the signing secret.
+            - name: IRON_CONTROL_SLACK_CONNECT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretEnv }}
+                  key: {{ printf "%sIRON_CONTROL_SLACK_CONNECT_CLIENT_ID" $prefix }}
+            - name: IRON_CONTROL_SLACK_CONNECT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretEnv }}
+                  key: {{ printf "%sIRON_CONTROL_SLACK_CONNECT_CLIENT_SECRET" $prefix }}
+{{- end }}
             - name: RAILS_ENV
               value: {{ $console.railsEnv | quote }}
 {{- with $console.slackDmSync.oauthAppSlug }}
@@ -176,6 +194,10 @@ spec:
 {{- if .Values.apiRs.enabled }}
             - name: CENTAUR_CONSOLE_CENTAUR_API_URL
               value: {{ printf "http://%s:%v" $apiRsName .Values.apiRs.port | quote }}
+{{- end }}
+{{- range $name, $value := $console.extraEnv }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
 {{- end }}
           ports:
             - containerPort: {{ $console.service.httpPort }}
@@ -275,5 +297,14 @@ spec:
     - ports:
         - protocol: TCP
           port: 443
+{{- if $console.slackConnect.enabled }}
+    # Kubernetes API egress for the Slack Connect bridge (patch infra secret +
+    # restart slackbot on connect). The kubernetes.default ClusterIP (:443) is
+    # DNAT'd to the real endpoint port (6443 on k3s/kubeadm); enforcing CNIs
+    # match egress post-DNAT, so allow that port.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.apiServerPort }}
+{{- end }}
 {{- end }}
 {{- end }}

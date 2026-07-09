@@ -18,21 +18,21 @@
 
     <style>
       ::selection { background: #28c26a; color: #050506; }
-      .glow { filter: drop-shadow(0 0 14px rgba(40,194,106,0.45)); }
+      .glow { filter: drop-shadow(0 0 10px rgba(40,194,106,0.22)); }
       *::-webkit-scrollbar { width: 10px; height: 10px; }
-      *::-webkit-scrollbar-track { background: #0b0b0d; }
-      *::-webkit-scrollbar-thumb { background: #33333a; border-radius: 1px; }
+      *::-webkit-scrollbar-track { background: #f6f7f9; }
+      *::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 1px; }
       *::-webkit-scrollbar-thumb:hover { background: #28c26a; }
     </style>
   </head>
 
   <body class="h-full bg-ink-900 text-zinc-300 font-mono antialiased">
     <div class="min-h-full">
-      <header class="border-b border-ink-600 bg-ink-850/80 backdrop-blur sticky top-0 z-10">
+      <header class="border-b border-ink-600 bg-ink-850/90 shadow-sm backdrop-blur sticky top-0 z-10">
         <div class="mx-auto max-w-7xl px-6">
           <div class="flex items-center justify-between h-16">
             <a href="<%= root_path %>" class="group flex items-center" aria-label="Centaur Console">
-              <%= image_tag "centaur-lockup-white.svg", alt: "Centaur", class: "h-7 w-auto glow", width: 497, height: 127 %>
+              <%= image_tag "centaur-lockup-white.svg", alt: "Centaur", class: "h-7 w-auto invert", width: 497, height: 127 %>
             </a>
             <div class="flex items-center gap-4 text-sm">
               <nav class="flex items-center gap-1">
@@ -43,10 +43,12 @@
                   ["credentials", console_credentials_path],
                   ["oauth apps", console_oauth_apps_path]
                 ] %>
+                <% nav << ["slack", console_slack_integration_path] if current_user&.admin? %>
+                <% nav << ["google", console_google_integration_path] if current_user&.admin? %>
                 <% nav << ["users", console_users_path] if current_user&.admin? %>
                 <% nav << ["ETLs", console_etls_path] %>
                 <% nav.each do |name, path| %>
-                  <% active = request.path == path || (name == "principals" && request.path.start_with?("/console/principals")) || (name == "roles" && request.path.start_with?("/console/roles")) || (name == "ETLs" && request.path.start_with?("/console/etls")) %>
+                  <% active = request.path == path || (name == "principals" && request.path.start_with?("/console/principals")) || (name == "roles" && request.path.start_with?("/console/roles")) || (name == "slack" && request.path.start_with?("/console/integrations/slack")) || (name == "google" && request.path.start_with?("/console/integrations/google")) || (name == "ETLs" && request.path.start_with?("/console/etls")) %>
                   <a href="<%= path %>"
                      class="px-4 py-2 transition-colors <%= active ? "text-centaur-400" : "text-zinc-400 hover:text-zinc-100" %>">
                     <%= name == "ETLs" ? name : name.capitalize %>
@@ -58,7 +60,7 @@
                 <div class="flex items-center gap-3 border-l border-ink-600 pl-4">
                   <span class="text-zinc-500" title="<%= current_user.email %>"><%= current_user.email %></span>
                   <%= button_to "Sign out", logout_path, method: :delete,
-                        class: "cursor-pointer rounded border border-ink-600 px-3 py-1.5 text-zinc-400 transition-colors hover:border-centaur-500/40 hover:text-centaur-300" %>
+                        class: "cursor-pointer rounded border border-ink-600 bg-ink-850 px-3 py-1.5 text-zinc-400 transition-colors hover:border-centaur-500/40 hover:text-centaur-300" %>
                 </div>
               <% end %>
             </div>
@@ -68,7 +70,7 @@
 
       <main class="mx-auto max-w-7xl px-6 py-10">
         <% if flash[:notice] %>
-          <div class="mb-6 rounded border border-ink-600 bg-ink-850/60 px-4 py-3 text-sm text-zinc-400"><%= flash[:notice] %></div>
+          <div class="mb-6 rounded border border-ink-600 bg-ink-850 px-4 py-3 text-sm text-zinc-400 shadow-sm"><%= flash[:notice] %></div>
         <% end %>
         <% if flash[:alert] %>
           <div class="alert-error"><%= flash[:alert] %></div>

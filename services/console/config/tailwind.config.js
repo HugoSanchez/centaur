@@ -8,17 +8,24 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Centaur brand accent (green), centered on #28c26a from centaur.run.
+        // Light-console semantics: existing templates were written for a dark
+        // theme, so the numeric ramps below preserve class intent rather than
+        // Tailwind's default light-to-dark meaning.
         centaur: {
-          50: '#e8faf0', 100: '#c6f3da', 200: '#93e7b7',
-          300: '#5cd793', 400: '#3ace79', 500: '#28c26a',
+          50: '#e8faf0', 100: '#155330', 200: '#18653a',
+          300: '#1a8147', 400: '#1ea358', 500: '#28c26a',
           600: '#1ea358', 700: '#1a8147', 800: '#18653a', 900: '#155330'
         },
-        // Near-black neutral surfaces matching centaur.run (#050506 page,
-        // #101012 / #111114 surfaces, #17171a sunk).
+        zinc: {
+          50: '#111827', 100: '#18181b', 200: '#27272a',
+          300: '#3f3f46', 400: '#52525b', 500: '#71717a',
+          600: '#a1a1aa', 700: '#d4d4d8', 800: '#e4e4e7',
+          900: '#f4f4f5', 950: '#fafafa'
+        },
+        // Light neutral surfaces mapped onto the app's existing ink classes.
         ink: {
-          950: '#050506', 900: '#070708', 850: '#0b0b0d', 800: '#101012',
-          700: '#17171a', 600: '#242427', 500: '#33333a'
+          950: '#f8fafc', 900: '#f6f7f9', 850: '#ffffff', 800: '#f9fafb',
+          700: '#ffffff', 600: '#d9dee7', 500: '#b6c0cc'
         }
       },
       fontFamily: {

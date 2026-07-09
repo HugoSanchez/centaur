@@ -1,0 +1,40 @@
+{{- $console := include "centaur.consoleValues" . | fromYaml }}
+{{- if $console.slackConnect.enabled }}
+# RBAC for the console's Slack runtime bridge. When an admin completes the
+# "Connect Slack" OAuth flow, the console writes the bot token into the infra
+# secret and restarts the slackbot so it picks it up. Scoped as tightly as
+# possible: get/patch on exactly that one Secret and that one Deployment, in
+# this namespace only. Bound to the console's ServiceAccount (default).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "centaur.consoleName" . }}-slack-runtime
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "console") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ include "centaur.secretEnvName" . }}"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["{{ include "centaur.componentName" (dict "root" . "component" "slackbotv2") }}"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "centaur.consoleName" . }}-slack-runtime
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "console") | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "centaur.consoleName" . }}-slack-runtime
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

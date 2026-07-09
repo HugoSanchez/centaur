@@ -1,0 +1,102 @@
+<% content_for :title, "Slack · Centaur Console" %>
+
+<div class="mb-8 flex items-start justify-between gap-6">
+  <div>
+    <h1 class="page-title">Slack</h1>
+    <p class="page-subtitle">Connect a Slack workspace and verify the local event endpoint.</p>
+  </div>
+  <% if @configured %>
+    <% if @installation %>
+      <%= button_to "Disconnect", disconnect_integrations_slack_path,
+            method: :delete,
+            form: { data: { turbo_confirm: "Disconnect Slack workspace #{@installation.display_name}?" } },
+            class: "btn-secondary" %>
+    <% else %>
+      <%= button_to "Connect Slack", integrations_slack_install_path,
+            method: :post,
+            form: { data: { turbo: false } },
+            class: "btn-primary" %>
+    <% end %>
+  <% end %>
+</div>
+
+<% unless @configured %>
+  <div class="alert-error">
+    Slack Connect is not configured. Set <code>CENTAUR_CONSOLE_SLACK_CONNECT_CLIENT_ID</code>
+    and <code>CENTAUR_CONSOLE_SLACK_CONNECT_CLIENT_SECRET</code> on the console deployment.
+  </div>
+<% end %>
+
+<div class="grid gap-6 lg:grid-cols-2">
+  <section class="form-section">
+    <h2 class="form-section-heading">Connection</h2>
+    <% if @installation %>
+      <dl class="space-y-3 text-sm">
+        <div>
+          <dt class="text-xs uppercase tracking-wider text-zinc-500">Workspace</dt>
+          <dd class="mt-1 text-zinc-100"><%= @installation.display_name %></dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wider text-zinc-500">Team ID</dt>
+          <dd class="mt-1 font-mono text-xs text-zinc-300"><%= @installation.team_id %></dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wider text-zinc-500">Bot user ID</dt>
+          <dd class="mt-1 font-mono text-xs text-zinc-300"><%= @installation.bot_user_id.presence || "unknown" %></dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wider text-zinc-500">Last updated</dt>
+          <dd class="mt-1 text-zinc-300"><%= local_time(@installation.updated_at, relative: true) %></dd>
+        </div>
+      </dl>
+
+      <div class="mt-6 flex gap-3">
+        <%= button_to "Check token", check_integrations_slack_path,
+              method: :post,
+              class: "btn-secondary" %>
+      </div>
+    <% else %>
+      <p class="text-sm text-zinc-500">No Slack workspace is connected yet.</p>
+    <% end %>
+  </section>
+
+  <section class="form-section">
+    <h2 class="form-section-heading">Slack app URLs</h2>
+    <div class="space-y-4 text-sm">
+      <div>
+        <div class="form-label">OAuth redirect URL</div>
+        <code class="block break-all rounded border border-ink-600 bg-ink-850 px-3 py-2 text-xs text-zinc-100"><%= @callback_url %></code>
+      </div>
+      <div>
+        <div class="form-label">Event request URL</div>
+        <code class="block break-all rounded border border-ink-600 bg-ink-850 px-3 py-2 text-xs text-zinc-100"><%= @event_url %></code>
+      </div>
+    </div>
+  </section>
+</div>
+
+<section class="form-section mt-6">
+  <h2 class="form-section-heading">Requested scopes</h2>
+  <div class="grid gap-6 lg:grid-cols-2">
+    <div>
+      <h3 class="mb-2 text-xs uppercase tracking-wider text-zinc-500">Bot token</h3>
+      <div class="flex flex-wrap gap-2">
+        <% @bot_scopes.each do |scope| %>
+          <span class="label-chip"><%= scope %></span>
+        <% end %>
+      </div>
+    </div>
+    <div>
+      <h3 class="mb-2 text-xs uppercase tracking-wider text-zinc-500">User token</h3>
+      <div class="flex flex-wrap gap-2">
+        <% if @user_scopes.any? %>
+          <% @user_scopes.each do |scope| %>
+            <span class="label-chip"><%= scope %></span>
+          <% end %>
+        <% else %>
+          <span class="text-sm text-zinc-500">None requested</span>
+        <% end %>
+      </div>
+    </div>
+  </div>
+</section>
