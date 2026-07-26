@@ -241,6 +241,12 @@ impl AgentSandboxBackend {
     /// Rebinds to the principal stamped on the sandbox at create (read back off
     /// its annotation, so it survives pause and api-rs restarts). Returns `None`
     /// when the sandbox has no proxy or carries no principal annotation.
+    ///
+    /// Important: Postgres proxy credentials are stable per sandbox. The
+    /// sandbox process already has `CENTAUR_POSTGRES_DSN` in its env, so resume
+    /// must read that DSN back and give the recreated proxy the same
+    /// `IRON_PROXY_PG_CLIENT_*` values. Generating a fresh pg-user here leaves
+    /// the sandbox presenting a username the proxy does not know.
     pub(crate) async fn resolve_iron_proxy_for_resume(
         &self,
         id: &SandboxId,
@@ -262,7 +268,7 @@ impl AgentSandboxBackend {
         let Some(principal_id) = principal_id else {
             return Ok(None);
         };
-        let pg = self.resolved_pg();
+        let pg = self.resolved_pg_for_existing_sandbox(id, &sandbox).await?;
         let replace_placeholders = self.effective_replace_placeholders(&principal_id).await?;
         Ok(Some(ResolvedIronProxy {
             proxy_host: iron_proxy_service_name(id),
@@ -273,6 +279,29 @@ impl AgentSandboxBackend {
             replace_placeholders,
             management_api_key: new_proxy_management_api_key(),
         }))
+    }
+
+    async fn resolved_pg_for_existing_sandbox(
+        &self,
+        id: &SandboxId,
+        sandbox: &crate::crd::Sandbox,
+    ) -> SandboxResult<Option<ResolvedPg>> {
+        if self.resolved_pg().is_none() {
+            return Ok(None);
+        }
+        if let Some(pg) = pg_from_sandbox_template(sandbox, &self.config.container_name) {
+            return Ok(Some(pg));
+        }
+        if let Some(pod) = self.get_pod(id).await?
+            && let Some(pg) = pg_from_pod(&pod, &self.config.container_name)
+        {
+            return Ok(Some(pg));
+        }
+        Err(SandboxError::InvalidSpec(format!(
+            "existing sandbox {} has no {CENTAUR_POSTGRES_DSN_ENV}; cannot recreate \
+             iron-proxy with matching Postgres client credentials",
+            id.as_str()
+        )))
     }
 
     pub(crate) async fn create_iron_proxy_resources(
@@ -913,6 +942,60 @@ pub(crate) fn apply_proxy_env(spec: &mut SandboxSpec, resolved: &ResolvedIronPro
         );
         set_missing_env(spec, CENTAUR_POSTGRES_DSN_ENV, &value);
     }
+}
+
+fn pg_from_sandbox_template(
+    sandbox: &crate::crd::Sandbox,
+    container_name: &str,
+) -> Option<ResolvedPg> {
+    let container = sandbox
+        .spec
+        .pod_template
+        .spec
+        .containers
+        .iter()
+        .find(|container| container.name == container_name)
+        .or_else(|| sandbox.spec.pod_template.spec.containers.first())?;
+    let dsn = container
+        .env
+        .as_ref()?
+        .iter()
+        .find(|env| env.name == CENTAUR_POSTGRES_DSN_ENV)
+        .and_then(|env| env.value.as_deref())?;
+    pg_from_sandbox_dsn(dsn)
+}
+
+fn pg_from_pod(pod: &Pod, container_name: &str) -> Option<ResolvedPg> {
+    let container = pod
+        .spec
+        .as_ref()?
+        .containers
+        .iter()
+        .find(|container| container.name == container_name)
+        .or_else(|| pod.spec.as_ref()?.containers.first())?;
+    let dsn = container
+        .env
+        .as_ref()?
+        .iter()
+        .find(|env| env.name == CENTAUR_POSTGRES_DSN_ENV)
+        .and_then(|env| env.value.as_deref())?;
+    pg_from_sandbox_dsn(dsn)
+}
+
+fn pg_from_sandbox_dsn(dsn: &str) -> Option<ResolvedPg> {
+    let auth = authority(dsn)?.rsplit_once('@').map(|(auth, _)| auth)?;
+    let (user, password) = auth.split_once(':')?;
+    let user = user.trim();
+    let password = password.trim();
+    if user.is_empty() || password.is_empty() {
+        return None;
+    }
+    Some(ResolvedPg {
+        listen: format!("0.0.0.0:{PG_LISTENER_PORT}"),
+        port: PG_LISTENER_PORT,
+        user: user.to_owned(),
+        password: password.to_owned(),
+    })
 }
 
 pub(crate) fn sandbox_ca_volume_mount_json() -> Value {
@@ -1776,6 +1859,67 @@ mod tests {
         );
         pod.status.as_mut().unwrap().phase = Some("Pending".to_owned());
         assert!(proxy_management_endpoint_from_pod(&pod).is_none());
+    }
+
+    fn sandbox_with_agent_dsn(dsn: Option<&str>) -> crate::crd::Sandbox {
+        let env = dsn
+            .map(|value| json!([{ "name": CENTAUR_POSTGRES_DSN_ENV, "value": value }]))
+            .unwrap_or_else(|| json!([]));
+        serde_json::from_value(json!({
+            "metadata": { "name": "asbx-test" },
+            "spec": {
+                "replicas": 1,
+                "podTemplate": {
+                    "spec": {
+                        "containers": [{
+                            "name": "agent",
+                            "image": "centaur-agent:latest",
+                            "env": env
+                        }]
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn pg_credentials_are_read_from_persisted_sandbox_template_on_resume() {
+        let sandbox = sandbox_with_agent_dsn(Some(
+            "postgresql://pg-user-existing:pg-pass-existing@asbx-test-proxy:5432",
+        ));
+
+        let pg = pg_from_sandbox_template(&sandbox, "agent").unwrap();
+
+        assert_eq!(pg.listen, "0.0.0.0:5432");
+        assert_eq!(pg.port, 5432);
+        assert_eq!(pg.user, "pg-user-existing");
+        assert_eq!(pg.password, "pg-pass-existing");
+    }
+
+    #[test]
+    fn pg_credentials_can_be_read_from_running_pod_env() {
+        let pod = running_proxy_pod(
+            "10.1.2.3",
+            vec![env_var(
+                CENTAUR_POSTGRES_DSN_ENV,
+                "postgresql://pg-user-pod:pg-pass-pod@asbx-test-proxy:5432",
+            )],
+        );
+
+        let pg = pg_from_pod(&pod, "iron-proxy").unwrap();
+
+        assert_eq!(pg.user, "pg-user-pod");
+        assert_eq!(pg.password, "pg-pass-pod");
+    }
+
+    #[test]
+    fn invalid_or_missing_sandbox_dsn_does_not_synthesize_pg_credentials() {
+        let sandbox = sandbox_with_agent_dsn(None);
+        assert!(pg_from_sandbox_template(&sandbox, "agent").is_none());
+
+        let sandbox = sandbox_with_agent_dsn(Some("postgresql://asbx-test-proxy:5432"));
+        assert!(pg_from_sandbox_template(&sandbox, "agent").is_none());
     }
 
     /// Stub of the proxy management API from iron-proxy's managed mode:
