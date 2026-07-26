@@ -1,0 +1,92 @@
+name: Publish Fork API
+
+# Fork-only pipeline for api-rs changes used by the Lightsail spike. The
+# upstream image publisher targets ghcr.io/paradigmxyz/centaur and uses Depot,
+# so the fork needs its own GHCR image for backend iteration.
+
+on:
+  push:
+    branches: [fork-main]
+    paths:
+      - services/api-rs/**
+      - services/workflow-python/**
+      - tools/**
+      - workflows/**
+      - .github/workflows/publish-fork-api-rs.yml
+  workflow_dispatch:
+
+concurrency:
+  group: publish-fork-api-rs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # Resolves to ghcr.io/<owner>/centaur/centaur-api-rs; metadata-action
+  # lowercases the owner (HugoSanchez -> hugosanchez).
+  IMAGE: ${{ github.repository_owner }}/centaur/centaur-api-rs
+  RUST_BUILD_PROFILE: debug
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+          labels: |
+            org.opencontainers.image.title=centaur-api-rs
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/api-rs/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            RUST_BUILD_PROFILE=${{ env.RUST_BUILD_PROFILE }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published fork API image"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "Deploy with:"
+            echo '```bash'
+            echo "API_RS_IMAGE_REPO=${{ env.REGISTRY }}/${{ env.IMAGE }} \\"
+            echo "API_RS_IMAGE_TAG=sha-$(echo ${{ github.sha }} | cut -c1-7)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
