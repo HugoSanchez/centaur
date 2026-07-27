@@ -21,6 +21,7 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub const SESSION_EVENTS_CHANNEL: &str = "centaur_session_events";
 const DEFAULT_MAX_CONNECTIONS: u32 = 500;
+const SANDBOX_CAPABILITY_HASH_METADATA_KEY: &str = "sandbox_capability_hash";
 
 #[derive(Clone, Debug)]
 pub struct CreateExecutionResult {
@@ -632,17 +633,71 @@ impl PgSessionStore {
         let row = sqlx::query_as::<_, SessionRow>(
             r#"
             update sessions
-            set sandbox_id = $2, updated_at = now()
+            set sandbox_id = $2,
+                metadata = coalesce(metadata, '{}'::jsonb) - $3,
+                updated_at = now()
             where thread_key = $1
             returning thread_key, sandbox_id, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
             "#,
         )
         .bind(thread_key.as_str())
         .bind(sandbox_id)
+        .bind(SANDBOX_CAPABILITY_HASH_METADATA_KEY)
         .fetch_one(&self.pool)
         .await?;
 
         row.try_into()
+    }
+
+    pub async fn update_sandbox_id_and_capability_hash(
+        &self,
+        thread_key: &ThreadKey,
+        sandbox_id: &str,
+        capability_hash: &str,
+    ) -> Result<Session, SessionStoreError> {
+        let row = sqlx::query_as::<_, SessionRow>(
+            r#"
+            update sessions
+            set sandbox_id = $2,
+                metadata = jsonb_set(
+                    coalesce(metadata, '{}'::jsonb),
+                    array[$4]::text[],
+                    to_jsonb($3::text),
+                    true
+                ),
+                updated_at = now()
+            where thread_key = $1
+            returning thread_key, sandbox_id, harness_type, harness_thread_id, persona_id, status, iron_control_principal, created_at, updated_at
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .bind(sandbox_id)
+        .bind(capability_hash)
+        .bind(SANDBOX_CAPABILITY_HASH_METADATA_KEY)
+        .fetch_one(&self.pool)
+        .await?;
+
+        row.try_into()
+    }
+
+    pub async fn sandbox_capability_hash(
+        &self,
+        thread_key: &ThreadKey,
+    ) -> Result<Option<String>, SessionStoreError> {
+        let hash = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            select metadata->>$2
+            from sessions
+            where thread_key = $1
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .bind(SANDBOX_CAPABILITY_HASH_METADATA_KEY)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+
+        Ok(hash)
     }
 
     pub async fn clear_sandbox_id_if_matches(
@@ -653,12 +708,15 @@ impl PgSessionStore {
         let result = sqlx::query(
             r#"
             update sessions
-            set sandbox_id = null, updated_at = now()
+            set sandbox_id = null,
+                metadata = coalesce(metadata, '{}'::jsonb) - $3,
+                updated_at = now()
             where thread_key = $1 and sandbox_id = $2
             "#,
         )
         .bind(thread_key.as_str())
         .bind(sandbox_id)
+        .bind(SANDBOX_CAPABILITY_HASH_METADATA_KEY)
         .execute(&self.pool)
         .await?;
 
@@ -679,6 +737,7 @@ impl PgSessionStore {
             set harness_type = $2,
                 harness_thread_id = null,
                 sandbox_id = null,
+                metadata = coalesce(metadata, '{}'::jsonb) - $4,
                 status = $3,
                 updated_at = now()
             where thread_key = $1
@@ -688,6 +747,7 @@ impl PgSessionStore {
         .bind(thread_key.as_str())
         .bind(harness_type.as_ref())
         .bind(SessionStatus::Idle.as_ref())
+        .bind(SANDBOX_CAPABILITY_HASH_METADATA_KEY)
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| SessionStoreError::NotFound {
@@ -1236,5 +1296,75 @@ mod tests {
         assert!(!second.created);
         assert_eq!(second.execution.execution_id, first.execution_id);
         assert_eq!(second.execution.status, ExecutionStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn sandbox_capability_hash_tracks_sandbox_binding() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let thread_key = ThreadKey::parse(format!("test:sandbox-hash-{}", Uuid::new_v4())).unwrap();
+        store
+            .create_or_get_session(&thread_key, &HarnessType::Codex, None, json!({}))
+            .await
+            .expect("create session");
+
+        assert_eq!(
+            store
+                .sandbox_capability_hash(&thread_key)
+                .await
+                .expect("read missing hash"),
+            None
+        );
+
+        store
+            .update_sandbox_id_and_capability_hash(
+                &thread_key,
+                "sbx-current",
+                "sandbox-spec-sha256:test",
+            )
+            .await
+            .expect("set sandbox with hash");
+        assert_eq!(
+            store
+                .sandbox_capability_hash(&thread_key)
+                .await
+                .expect("read hash"),
+            Some("sandbox-spec-sha256:test".to_owned())
+        );
+
+        store
+            .update_sandbox_id(&thread_key, Some("sbx-legacy"))
+            .await
+            .expect("legacy sandbox update clears hash");
+        assert_eq!(
+            store
+                .sandbox_capability_hash(&thread_key)
+                .await
+                .expect("read cleared hash"),
+            None
+        );
+
+        store
+            .update_sandbox_id_and_capability_hash(
+                &thread_key,
+                "sbx-current",
+                "sandbox-spec-sha256:test",
+            )
+            .await
+            .expect("set sandbox with hash");
+        assert!(
+            store
+                .clear_sandbox_id_if_matches(&thread_key, "sbx-current")
+                .await
+                .expect("clear sandbox id")
+        );
+        assert_eq!(
+            store
+                .sandbox_capability_hash(&thread_key)
+                .await
+                .expect("read cleared hash"),
+            None
+        );
     }
 }

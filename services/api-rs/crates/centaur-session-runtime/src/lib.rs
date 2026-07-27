@@ -1331,128 +1331,182 @@ impl SessionRuntime {
         let ensure_started = Instant::now();
         let result = async {
             let persona_context = self.resolve_stored_persona(persona_id, harness_type)?;
+            let mut spec = (self.sandbox_runtime.spec_factory)(
+                thread_key,
+                execution_id,
+                harness_type,
+                persona_context.as_ref(),
+            );
+            if let Some(principal) = iron_control_principal {
+                spec.iron_control_principal = Some(principal.to_owned());
+            }
+            let expected_sandbox_capability_hash = sandbox_spec_key(&spec);
             if let Some(sandbox_id) = existing_sandbox_id {
-                let id = SandboxId::new(sandbox_id);
-                match self.sandbox_runtime.manager.status(&id).await {
-                    Ok(status) => match existing_sandbox_action(&status) {
-                        ExistingSandboxAction::Reuse => {
-                            span.record("centaur.sandbox_id", sandbox_id);
-                            span.record("sandbox_id", sandbox_id);
-                            let ready_duration = ensure_started.elapsed();
-                            self.record_sandbox_ready(SandboxReadyObservation {
-                                thread_key,
-                                execution_id,
-                                sandbox_id,
-                                harness_type,
-                                source: "reused",
-                                ready_duration,
-                                startup_duration: None,
-                            })
-                            .await;
-                            info!(
-                                component = COMPONENT_SESSION_RUNTIME,
-                                event = "sandbox_ensure_reused",
-                                thread_key = %thread_key,
-                                execution_id,
-                                sandbox_id,
-                                harness_type = %harness_type,
-                                sandbox_ready_source = "reused",
-                                sandbox_ready_duration_ms = duration_millis_u64(ready_duration),
-                                "reusing existing session sandbox"
-                            );
-                            return Ok(sandbox_id.to_owned());
-                        }
-                        ExistingSandboxAction::ResumeOrReplace => {
-                            self.sandbox_pipes.remove(sandbox_id);
-                            match self.sandbox_runtime.manager.resume(&id).await {
-                                Ok(()) => {
-                                    span.record("centaur.sandbox_id", sandbox_id);
-                                    span.record("sandbox_id", sandbox_id);
-                                    let ready_duration = ensure_started.elapsed();
-                                    self.store
-                                        .append_event(
+                let stored_hash = self.store.sandbox_capability_hash(thread_key).await?;
+                if stored_hash.as_deref() == Some(expected_sandbox_capability_hash.as_str()) {
+                    let id = SandboxId::new(sandbox_id);
+                    match self.sandbox_runtime.manager.status(&id).await {
+                        Ok(status) => match existing_sandbox_action(&status) {
+                            ExistingSandboxAction::Reuse => {
+                                span.record("centaur.sandbox_id", sandbox_id);
+                                span.record("sandbox_id", sandbox_id);
+                                let ready_duration = ensure_started.elapsed();
+                                self.record_sandbox_ready(SandboxReadyObservation {
+                                    thread_key,
+                                    execution_id,
+                                    sandbox_id,
+                                    harness_type,
+                                    source: "reused",
+                                    ready_duration,
+                                    startup_duration: None,
+                                })
+                                .await;
+                                info!(
+                                    component = COMPONENT_SESSION_RUNTIME,
+                                    event = "sandbox_ensure_reused",
+                                    thread_key = %thread_key,
+                                    execution_id,
+                                    sandbox_id,
+                                    harness_type = %harness_type,
+                                    sandbox_ready_source = "reused",
+                                    sandbox_ready_duration_ms = duration_millis_u64(ready_duration),
+                                    "reusing existing session sandbox"
+                                );
+                                return Ok(sandbox_id.to_owned());
+                            }
+                            ExistingSandboxAction::ResumeOrReplace => {
+                                self.sandbox_pipes.remove(sandbox_id);
+                                match self.sandbox_runtime.manager.resume(&id).await {
+                                    Ok(()) => {
+                                        span.record("centaur.sandbox_id", sandbox_id);
+                                        span.record("sandbox_id", sandbox_id);
+                                        let ready_duration = ensure_started.elapsed();
+                                        self.store
+                                            .append_event(
+                                                thread_key,
+                                                Some(execution_id),
+                                                "session.sandbox_resumed",
+                                                json!({
+                                                    "execution_id": execution_id,
+                                                    "thread_key": thread_key.as_str(),
+                                                    "sandbox_id": sandbox_id,
+                                                }),
+                                            )
+                                            .await?;
+                                        self.record_sandbox_ready(SandboxReadyObservation {
                                             thread_key,
-                                            Some(execution_id),
-                                            "session.sandbox_resumed",
-                                            json!({
-                                                "execution_id": execution_id,
-                                                "thread_key": thread_key.as_str(),
-                                                "sandbox_id": sandbox_id,
-                                            }),
-                                        )
-                                        .await?;
-                                    self.record_sandbox_ready(SandboxReadyObservation {
-                                        thread_key,
-                                        execution_id,
-                                        sandbox_id,
-                                        harness_type,
-                                        source: "resumed",
-                                        ready_duration,
-                                        startup_duration: None,
-                                    })
-                                    .await;
-                                    info!(
-                                        component = COMPONENT_SESSION_RUNTIME,
-                                        event = "sandbox_ensure_resumed",
-                                        thread_key = %thread_key,
-                                        execution_id,
-                                        sandbox_id,
-                                        harness_type = %harness_type,
-                                        sandbox_ready_source = "resumed",
-                                        sandbox_ready_duration_ms = duration_millis_u64(ready_duration),
-                                        "resumed existing session sandbox"
-                                    );
-                                    return Ok(sandbox_id.to_owned());
-                                }
-                                Err(error) => {
-                                    warn!(
-                                        component = COMPONENT_SESSION_RUNTIME,
-                                        event = "sandbox_ensure_resume_failed",
-                                        %thread_key,
-                                        %execution_id,
-                                        %sandbox_id,
-                                        %error,
-                                        "replacing sandbox after resume failed"
-                                    );
-                                    self.store
-                                        .append_event(
-                                            thread_key,
-                                            Some(execution_id),
-                                            "session.sandbox_resume_failed",
-                                            json!({
-                                                "execution_id": execution_id,
-                                                "thread_key": thread_key.as_str(),
-                                                "sandbox_id": sandbox_id,
-                                                "error": error.to_string(),
-                                            }),
-                                        )
-                                        .await?;
+                                            execution_id,
+                                            sandbox_id,
+                                            harness_type,
+                                            source: "resumed",
+                                            ready_duration,
+                                            startup_duration: None,
+                                        })
+                                        .await;
+                                        info!(
+                                            component = COMPONENT_SESSION_RUNTIME,
+                                            event = "sandbox_ensure_resumed",
+                                            thread_key = %thread_key,
+                                            execution_id,
+                                            sandbox_id,
+                                            harness_type = %harness_type,
+                                            sandbox_ready_source = "resumed",
+                                            sandbox_ready_duration_ms = duration_millis_u64(ready_duration),
+                                            "resumed existing session sandbox"
+                                        );
+                                        return Ok(sandbox_id.to_owned());
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            component = COMPONENT_SESSION_RUNTIME,
+                                            event = "sandbox_ensure_resume_failed",
+                                            %thread_key,
+                                            %execution_id,
+                                            %sandbox_id,
+                                            %error,
+                                            "replacing sandbox after resume failed"
+                                        );
+                                        self.store
+                                            .append_event(
+                                                thread_key,
+                                                Some(execution_id),
+                                                "session.sandbox_resume_failed",
+                                                json!({
+                                                    "execution_id": execution_id,
+                                                    "thread_key": thread_key.as_str(),
+                                                    "sandbox_id": sandbox_id,
+                                                    "error": error.to_string(),
+                                                }),
+                                            )
+                                            .await?;
+                                    }
                                 }
                             }
-                        }
-                        ExistingSandboxAction::Replace => {
+                            ExistingSandboxAction::Replace => {
+                                info!(
+                                    component = COMPONENT_SESSION_RUNTIME,
+                                    event = "sandbox_ensure_replacing",
+                                    thread_key = %thread_key,
+                                    execution_id,
+                                    sandbox_id,
+                                    status = ?status,
+                                    "existing sandbox is not reusable"
+                                );
+                            }
+                        },
+                        Err(SandboxError::NotFound(_)) => {
                             info!(
                                 component = COMPONENT_SESSION_RUNTIME,
-                                event = "sandbox_ensure_replacing",
+                                event = "sandbox_ensure_missing",
                                 thread_key = %thread_key,
                                 execution_id,
                                 sandbox_id,
-                                status = ?status,
-                                "existing sandbox is not reusable"
+                                "existing sandbox is missing"
                             );
                         }
-                    },
-                    Err(SandboxError::NotFound(_)) => {
-                        info!(
+                        Err(error) => return Err(SessionRuntimeError::Sandbox(error)),
+                    }
+                } else {
+                    info!(
+                        component = COMPONENT_SESSION_RUNTIME,
+                        event = "sandbox_ensure_stale_capabilities",
+                        thread_key = %thread_key,
+                        execution_id,
+                        sandbox_id,
+                        stored_sandbox_capability_hash = stored_hash.as_deref().unwrap_or(""),
+                        expected_sandbox_capability_hash = expected_sandbox_capability_hash.as_str(),
+                        "replacing session sandbox because capabilities changed"
+                    );
+                    self.sandbox_pipes.remove(sandbox_id);
+                    let id = SandboxId::new(sandbox_id);
+                    if let Err(error) = self.sandbox_runtime.manager.stop(&id).await {
+                        warn!(
                             component = COMPONENT_SESSION_RUNTIME,
-                            event = "sandbox_ensure_missing",
-                            thread_key = %thread_key,
-                            execution_id,
-                            sandbox_id,
-                            "existing sandbox is missing"
+                            event = "sandbox_ensure_stale_stop_failed",
+                            %thread_key,
+                            %execution_id,
+                            %sandbox_id,
+                            %error,
+                            "failed to stop stale session sandbox"
                         );
                     }
-                    Err(error) => return Err(SessionRuntimeError::Sandbox(error)),
+                    self.store
+                        .clear_sandbox_id_if_matches(thread_key, sandbox_id)
+                        .await?;
+                    self.store
+                        .append_event(
+                            thread_key,
+                            Some(execution_id),
+                            "session.sandbox_stale_capabilities",
+                            json!({
+                                "execution_id": execution_id,
+                                "thread_key": thread_key.as_str(),
+                                "sandbox_id": sandbox_id,
+                                "stored_hash": stored_hash,
+                                "expected_hash": expected_sandbox_capability_hash.as_str(),
+                            }),
+                        )
+                        .await?;
                 }
             }
 
@@ -1485,7 +1539,11 @@ impl SessionRuntime {
                         span.record("sandbox_id", sandbox_id.as_str());
                         let ready_duration = ensure_started.elapsed();
                         self.store
-                            .update_sandbox_id(thread_key, Some(sandbox_id.as_str()))
+                            .update_sandbox_id_and_capability_hash(
+                                thread_key,
+                                sandbox_id.as_str(),
+                                &expected_sandbox_capability_hash,
+                            )
                             .await?;
                         self.store
                             .append_event(
@@ -1495,6 +1553,7 @@ impl SessionRuntime {
                                 json!({
                                     "sandbox_id": sandbox_id.as_str(),
                                     "workload_key": warm_pool.workload_key(),
+                                    "sandbox_capability_hash": expected_sandbox_capability_hash.as_str(),
                                     "iron_control_principal": iron_control_principal,
                                 }),
                             )
@@ -1531,15 +1590,6 @@ impl SessionRuntime {
                 }
             }
 
-            let mut spec = (self.sandbox_runtime.spec_factory)(
-                thread_key,
-                execution_id,
-                harness_type,
-                persona_context.as_ref(),
-            );
-            if let Some(principal) = iron_control_principal {
-                spec.iron_control_principal = Some(principal.to_owned());
-            }
             let create_started = Instant::now();
             let handle = self.sandbox_runtime.manager.create_running(spec).await?;
             let startup_duration = create_started.elapsed();
@@ -1547,7 +1597,11 @@ impl SessionRuntime {
             span.record("centaur.sandbox_id", handle.id.as_str());
             span.record("sandbox_id", handle.id.as_str());
             self.store
-                .update_sandbox_id(thread_key, Some(handle.id.as_str()))
+                .update_sandbox_id_and_capability_hash(
+                    thread_key,
+                    handle.id.as_str(),
+                    &expected_sandbox_capability_hash,
+                )
                 .await?;
             self.record_sandbox_ready(SandboxReadyObservation {
                 thread_key,
@@ -5452,6 +5506,33 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_capability_hash_reflects_memory_and_proxy_env() {
+        let thread_key = ThreadKey::parse("chat:C123:1780000000.000000").unwrap();
+        let base = SandboxWorkloadMode::codex_app_server(
+            "centaur-agent:latest",
+            [("CENTAUR_API_URL".to_owned(), "http://api:8000".to_owned())],
+            HarnessType::Codex,
+        );
+        let with_memory = SandboxWorkloadMode::codex_app_server(
+            "centaur-agent:latest",
+            [
+                ("CENTAUR_API_URL".to_owned(), "http://api:8000".to_owned()),
+                (
+                    "CENTAUR_MEMORYD_URL".to_owned(),
+                    "http://memoryd:8787".to_owned(),
+                ),
+                ("HTTPS_PROXY".to_owned(), "http://proxy:8080".to_owned()),
+            ],
+            HarnessType::Codex,
+        );
+
+        assert_ne!(
+            sandbox_spec_key(&base.spec(&thread_key, &HarnessType::Codex, None)),
+            sandbox_spec_key(&with_memory.spec(&thread_key, &HarnessType::Codex, None))
+        );
+    }
+
+    #[test]
     fn codex_workload_pins_harness_via_container_args() {
         let workload = SandboxWorkloadMode::codex_app_server(
             "centaur-agent:latest",
@@ -6132,6 +6213,112 @@ mod adoption_tests {
         assert!(
             all.iter()
                 .any(|event| event.event_type == "session.sandbox_resume_failed")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_sandbox_capabilities_replace_legacy_sandbox() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let _serial = TEST_LOCK.lock().await;
+        let thread_key =
+            ThreadKey::parse(format!("test:stale-sandbox-{}", uuid::Uuid::new_v4())).unwrap();
+        store
+            .create_or_get_session(&thread_key, &HarnessType::Codex, None, json!({}))
+            .await
+            .expect("create session");
+        store
+            .update_sandbox_id(&thread_key, Some("sbx-legacy"))
+            .await
+            .expect("set legacy sandbox id");
+        let execution_id = store
+            .create_execution(&thread_key, None, json!({}))
+            .await
+            .expect("create execution")
+            .execution
+            .execution_id;
+
+        let backend = Arc::new(MockBackend::new(SandboxStatus::Running, Vec::new()));
+        let runtime = runtime_with(&store, backend.clone());
+        let sandbox_id = runtime
+            .ensure_session_sandbox(
+                &thread_key,
+                &HarnessType::Codex,
+                None,
+                Some("sbx-legacy"),
+                None,
+                &execution_id,
+            )
+            .await
+            .expect("legacy sandbox should be replaced");
+
+        assert_eq!(sandbox_id, "mock-sbx");
+        assert_eq!(backend.stopped(), vec!["sbx-legacy".to_owned()]);
+        let session = store.get_session(&thread_key).await.unwrap();
+        assert_eq!(session.sandbox_id, Some("mock-sbx".to_owned()));
+        assert_eq!(
+            store
+                .sandbox_capability_hash(&thread_key)
+                .await
+                .expect("read sandbox capability hash"),
+            Some(sandbox_spec_key(&SandboxSpec::new("mock")))
+        );
+        let all = events(&store, &thread_key).await;
+        assert!(
+            all.iter()
+                .any(|event| event.event_type == "session.sandbox_stale_capabilities"),
+            "missing capability hash should produce stale-capabilities event"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn matching_sandbox_capabilities_reuse_existing_sandbox() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let _serial = TEST_LOCK.lock().await;
+        let thread_key =
+            ThreadKey::parse(format!("test:current-sandbox-{}", uuid::Uuid::new_v4())).unwrap();
+        let capability_hash = sandbox_spec_key(&SandboxSpec::new("mock"));
+        store
+            .create_or_get_session(&thread_key, &HarnessType::Codex, None, json!({}))
+            .await
+            .expect("create session");
+        store
+            .update_sandbox_id_and_capability_hash(&thread_key, "sbx-current", &capability_hash)
+            .await
+            .expect("set current sandbox id");
+        let execution_id = store
+            .create_execution(&thread_key, None, json!({}))
+            .await
+            .expect("create execution")
+            .execution
+            .execution_id;
+
+        let backend = Arc::new(MockBackend::new(SandboxStatus::Running, Vec::new()));
+        let runtime = runtime_with(&store, backend.clone());
+        let sandbox_id = runtime
+            .ensure_session_sandbox(
+                &thread_key,
+                &HarnessType::Codex,
+                None,
+                Some("sbx-current"),
+                None,
+                &execution_id,
+            )
+            .await
+            .expect("current sandbox should be reused");
+
+        assert_eq!(sandbox_id, "sbx-current");
+        assert!(backend.stopped().is_empty());
+        let session = store.get_session(&thread_key).await.unwrap();
+        assert_eq!(session.sandbox_id, Some("sbx-current".to_owned()));
+        let all = events(&store, &thread_key).await;
+        assert!(
+            !all.iter()
+                .any(|event| event.event_type == "session.sandbox_stale_capabilities"),
+            "matching capability hash should not be marked stale"
         );
     }
 
