@@ -47,7 +47,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use sqlx::Row;
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tokio::time::timeout;
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 use uuid::Uuid;
@@ -189,6 +191,7 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
         .route("/api/personas", get(list_personas))
+        .route("/api/memory/status", get(memory_status))
         .route(
             "/api/session/{thread_key}",
             post(create_or_get_session).get(get_session_context),
@@ -408,6 +411,178 @@ async fn list_personas(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<PersonaSummary>>, ApiError> {
     Ok(Json(state.runtime()?.personas()))
+}
+
+async fn memory_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let _runtime = state.runtime()?;
+    let pool = state.pool()?;
+    Ok(Json(memory_status_payload(&pool).await?))
+}
+
+const MEMORY_TABLES: &[&str] = &[
+    "memory_pages",
+    "memory_documents",
+    "memory_embeddings",
+    "memory_ingest_cursors",
+];
+
+async fn memory_status_payload(pool: &PgPool) -> Result<Value, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        select table_name
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_name in (
+            'memory_pages',
+            'memory_documents',
+            'memory_embeddings',
+            'memory_ingest_cursors'
+          )
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let present = rows
+        .iter()
+        .map(|row| row.get::<String, _>("table_name"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing_tables = MEMORY_TABLES
+        .iter()
+        .filter(|table| !present.contains(**table))
+        .copied()
+        .collect::<Vec<_>>();
+    let memoryd = memoryd_status().await;
+
+    if !missing_tables.is_empty() {
+        return Ok(json!({
+            "ok": false,
+            "capability": "memory",
+            "configured": false,
+            "schema_ready": false,
+            "missing_tables": missing_tables,
+            "counts": {
+                "pages": 0,
+                "documents": 0,
+                "embedded_rows": 0,
+                "rows_missing_embeddings": 0
+            },
+            "sources": [],
+            "memoryd": memoryd,
+        }));
+    }
+
+    let counts = sqlx::query(
+        r#"
+        select
+            (select count(*)::bigint from memory_pages) as pages,
+            (select count(*)::bigint from memory_documents) as documents,
+            (select count(distinct kind || ':' || ref)::bigint
+               from memory_embeddings) as embedded_rows,
+            (select count(*)::bigint from (
+                select slug from memory_pages
+                where slug not in (
+                    select ref from memory_embeddings where kind = 'page')
+                union all
+                select id::text from memory_documents
+                where id::text not in (
+                    select ref from memory_embeddings where kind = 'doc')
+            ) missing) as rows_missing_embeddings
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let source_rows = sqlx::query(
+        r#"
+        select source, count(*)::bigint as documents, max(occurred_at) as latest_occurred_at
+        from memory_documents
+        group by source
+        order by documents desc, source
+        limit 20
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let sources = source_rows
+        .into_iter()
+        .map(|row| {
+            let latest = row
+                .try_get::<Option<OffsetDateTime>, _>("latest_occurred_at")
+                .ok()
+                .flatten();
+            json!({
+                "source": row.get::<String, _>("source"),
+                "documents": row.get::<i64, _>("documents"),
+                "latest_occurred_at": latest,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "ok": true,
+        "capability": "memory",
+        "configured": true,
+        "schema_ready": true,
+        "missing_tables": [],
+        "counts": {
+            "pages": counts.get::<i64, _>("pages"),
+            "documents": counts.get::<i64, _>("documents"),
+            "embedded_rows": counts.get::<i64, _>("embedded_rows"),
+            "rows_missing_embeddings": counts.get::<i64, _>("rows_missing_embeddings"),
+        },
+        "sources": sources,
+        "memoryd": memoryd,
+    }))
+}
+
+fn configured_memoryd_url() -> Option<String> {
+    ["CENTAUR_MEMORYD_URL", "MEMORY_EMBEDDER_URL"]
+        .into_iter()
+        .filter_map(|key| env::var(key).ok())
+        .map(|value| value.trim().to_owned())
+        .find(|value| {
+            !value.is_empty() && value != "CENTAUR_MEMORYD_URL" && value != "MEMORY_EMBEDDER_URL"
+        })
+}
+
+async fn memoryd_status() -> Value {
+    let Some(url) = configured_memoryd_url() else {
+        return json!({
+            "configured": false,
+            "reachable": false,
+            "url": null,
+        });
+    };
+    let health_url = format!("{}/healthz", url.trim_end_matches('/'));
+    let probe = timeout(Duration::from_secs(2), async {
+        let response = reqwest::get(&health_url).await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        Ok::<_, reqwest::Error>((status.as_u16(), status.is_success(), body))
+    })
+    .await;
+
+    match probe {
+        Ok(Ok((status_code, reachable, body))) => json!({
+            "configured": true,
+            "reachable": reachable,
+            "url": url,
+            "status_code": status_code,
+            "body": body,
+        }),
+        Ok(Err(error)) => json!({
+            "configured": true,
+            "reachable": false,
+            "url": url,
+            "error": error.to_string(),
+        }),
+        Err(_) => json!({
+            "configured": true,
+            "reachable": false,
+            "url": url,
+            "error": "memoryd health probe timed out",
+        }),
+    }
 }
 
 fn slack_thread_context(thread_key: &ThreadKey) -> Option<SlackThreadContext> {

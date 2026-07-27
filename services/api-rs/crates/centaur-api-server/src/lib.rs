@@ -183,6 +183,11 @@ mod tests {
                 .unwrap(),
             Request::builder()
                 .method(Method::GET)
+                .uri("/api/memory/status")
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method(Method::GET)
                 .uri("/api/workflows/schedules")
                 .body(Body::empty())
                 .unwrap(),
