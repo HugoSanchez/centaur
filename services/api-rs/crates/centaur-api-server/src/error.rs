@@ -63,6 +63,9 @@ impl IntoResponse for ApiError {
             Self::Runtime(SessionRuntimeError::Store(SessionStoreError::PersonaConflict {
                 ..
             })) => StatusCode::CONFLICT,
+            Self::Runtime(SessionRuntimeError::Store(
+                SessionStoreError::ActiveExecutionConflict { .. },
+            )) => StatusCode::CONFLICT,
             Self::Workflow(WorkflowRuntimeError::BadRequest(_)) => StatusCode::BAD_REQUEST,
             Self::Workflow(WorkflowRuntimeError::Disabled(_)) => StatusCode::FORBIDDEN,
             Self::Workflow(WorkflowRuntimeError::NotFound(_)) => StatusCode::NOT_FOUND,
@@ -102,6 +105,18 @@ impl IntoResponse for ApiError {
             body["existing_harness"] = json!(existing);
             body["requested_harness"] = json!(requested);
         }
+        if let Self::Runtime(SessionRuntimeError::Store(
+            SessionStoreError::ActiveExecutionConflict {
+                existing_execution_id,
+                existing_status,
+                ..
+            },
+        )) = &self
+        {
+            body["code"] = json!("active_execution_conflict");
+            body["existing_execution_id"] = json!(existing_execution_id);
+            body["existing_status"] = json!(existing_status);
+        }
         (status, Json(body)).into_response()
     }
 }
@@ -120,4 +135,32 @@ pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
         source = cause.source();
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::to_bytes, response::IntoResponse};
+    use serde_json::Value;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn active_execution_conflict_returns_structured_409() {
+        let response = ApiError::Runtime(SessionRuntimeError::Store(
+            SessionStoreError::ActiveExecutionConflict {
+                thread_key: "verso:thread-1".to_owned(),
+                existing_execution_id: "exe_active".to_owned(),
+                existing_status: "queued".to_owned(),
+            },
+        ))
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["code"], "active_execution_conflict");
+        assert_eq!(body["existing_execution_id"], "exe_active");
+        assert_eq!(body["existing_status"], "queued");
+    }
 }

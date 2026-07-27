@@ -203,8 +203,15 @@ impl PgSessionStore {
         idempotency_key: Option<&str>,
         metadata: Value,
     ) -> Result<CreateExecutionResult, SessionStoreError> {
+        if let Some(active) = self.active_execution_for_thread(thread_key).await? {
+            match joinable_active_execution(active, idempotency_key) {
+                Ok(result) => return Ok(result),
+                Err(active) => return Err(active_execution_conflict(thread_key, active)),
+            }
+        }
+
         let execution_id = prefixed_id("exe");
-        let row = sqlx::query_as::<_, CreateExecutionRow>(
+        let row = match sqlx::query_as::<_, CreateExecutionRow>(
             r#"
             insert into session_executions
                 (execution_id, thread_key, idempotency_key, status, metadata)
@@ -232,7 +239,20 @@ impl PgSessionStore {
         .bind(ExecutionStatus::Queued.as_ref())
         .bind(metadata)
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        {
+            Ok(row) => row,
+            Err(error) if is_one_active_execution_violation(&error) => {
+                if let Some(active) = self.active_execution_for_thread(thread_key).await? {
+                    match joinable_active_execution(active, idempotency_key) {
+                        Ok(result) => return Ok(result),
+                        Err(active) => return Err(active_execution_conflict(thread_key, active)),
+                    }
+                }
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         row.try_into()
     }
@@ -850,6 +870,43 @@ impl SessionEventListener {
     }
 }
 
+fn active_execution_conflict(
+    thread_key: &ThreadKey,
+    active: SessionExecution,
+) -> SessionStoreError {
+    SessionStoreError::ActiveExecutionConflict {
+        thread_key: thread_key.as_str().to_owned(),
+        existing_execution_id: active.execution_id,
+        existing_status: active.status.to_string(),
+    }
+}
+
+fn joinable_active_execution(
+    active: SessionExecution,
+    idempotency_key: Option<&str>,
+) -> Result<CreateExecutionResult, SessionExecution> {
+    let same_idempotency_key =
+        idempotency_key.is_some() && active.idempotency_key.as_deref() == idempotency_key;
+    if active.status == ExecutionStatus::Running
+        || (active.status == ExecutionStatus::Queued && same_idempotency_key)
+    {
+        return Ok(CreateExecutionResult {
+            execution: active,
+            created: false,
+        });
+    }
+    Err(active)
+}
+
+fn is_one_active_execution_violation(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(database_error) => {
+            database_error.constraint() == Some("session_executions_one_active_idx")
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct SessionEventNotification {
     pub thread_key: String,
@@ -875,6 +932,14 @@ pub enum SessionStoreError {
         thread_key: String,
         existing: Option<String>,
         requested: Option<String>,
+    },
+    #[error(
+        "session {thread_key} already has active execution {existing_execution_id} ({existing_status})"
+    )]
+    ActiveExecutionConflict {
+        thread_key: String,
+        existing_execution_id: String,
+        existing_status: String,
     },
     #[error("invalid persisted value: {0}")]
     InvalidPersistedValue(String),
@@ -1104,7 +1169,11 @@ pub fn default_metadata(metadata: Option<Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionEventNotification;
+    use centaur_session_core::{ExecutionStatus, HarnessType, ThreadKey};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{PgSessionStore, SessionEventNotification};
 
     #[test]
     fn parses_session_event_notification_payload() {
@@ -1118,5 +1187,54 @@ mod tests {
                 event_id: 42,
             }
         );
+    }
+
+    async fn test_store() -> Option<PgSessionStore> {
+        let url = match std::env::var("SESSION_SQLX_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("SESSION_RUNTIME_TEST_DATABASE_URL"))
+        {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!(
+                    "skipping: SESSION_SQLX_TEST_DATABASE_URL/SESSION_RUNTIME_TEST_DATABASE_URL not set"
+                );
+                return None;
+            }
+        };
+        let store = PgSessionStore::connect(&url)
+            .await
+            .expect("connect test db");
+        store.run_migrations().await.expect("run migrations");
+        Some(store)
+    }
+
+    #[tokio::test]
+    async fn create_execution_joins_existing_running_execution() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let thread_key = ThreadKey::parse(format!("test:active-join-{}", Uuid::new_v4())).unwrap();
+        store
+            .create_or_get_session(&thread_key, &HarnessType::Codex, None, json!({}))
+            .await
+            .expect("create session");
+        let first = store
+            .create_execution(&thread_key, Some("first"), json!({}))
+            .await
+            .expect("create first execution")
+            .execution;
+        store
+            .mark_execution_running(&first.execution_id)
+            .await
+            .expect("mark first running");
+
+        let second = store
+            .create_execution(&thread_key, Some("second"), json!({"source": "join"}))
+            .await
+            .expect("join running execution");
+
+        assert!(!second.created);
+        assert_eq!(second.execution.execution_id, first.execution_id);
+        assert_eq!(second.execution.status, ExecutionStatus::Running);
     }
 }
