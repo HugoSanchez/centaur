@@ -24,6 +24,7 @@ use crate::amp::AmpHarness;
 use crate::claude::ClaudeCodeHarness;
 use crate::codex::CodexHarnessServer;
 use crate::otel::{self, HarnessUsageSpan, TraceContext};
+use crate::session_persist;
 use crate::traits::{
     AppServerNormalizer, AppServerRuntime, HarnessChild, HarnessKind, HarnessServer,
     NormalizedContent, NormalizedEvent, NormalizedTokenUsage, ThreadState,
@@ -79,6 +80,7 @@ pub(crate) fn run_blocks_app_server<H: HarnessServer>(harness: &H) -> Result<()>
     let mut stdout = io::stdout().lock();
     let mut state = initial_blocks_thread_state(harness)?;
     let mut blocks_state = BlocksState::default();
+    let mut persisted_session_id = state.harness_session_id.clone();
     let (_request_tx, request_rx) = mpsc::channel();
 
     for raw in stdin.lock().lines() {
@@ -114,6 +116,17 @@ pub(crate) fn run_blocks_app_server<H: HarnessServer>(harness: &H) -> Result<()>
                 ) {
                     eprintln!("blocks turn failed: {error:#}");
                     write_blocks_error(&mut stdout, &state.id, "turn", error.to_string())?;
+                }
+                // Persist the harness-native session id (once known / when it
+                // changes) so a future harness-server on the same state volume
+                // can resume this conversation.
+                if state.harness_session_id.is_some()
+                    && state.harness_session_id != persisted_session_id
+                {
+                    if let Some(session_id) = state.harness_session_id.as_deref() {
+                        session_persist::store(harness.kind(), session_id);
+                    }
+                    persisted_session_id = state.harness_session_id.clone();
                 }
             }
             Ok(BlocksCommand::Interrupt) => {

@@ -27,7 +27,9 @@ use centaur_sandbox_core::{Mount, MountKind, SandboxSpec};
 use centaur_sandbox_local::LocalSandboxBackend;
 use centaur_sandbox_manager::{SandboxReaperConfig, WarmPoolConfig};
 use centaur_session_core::HarnessType;
-use centaur_session_runtime::{PersonaRegistry, SandboxWorkloadMode, SessionSandboxCleanupConfig};
+use centaur_session_runtime::{
+    PersonaRegistry, SandboxWorkloadMode, SessionSandboxCleanupConfig, SessionStateVolume,
+};
 use centaur_workflows::WorkflowHostSandboxRuntime;
 use clap::{Args as ClapArgs, Parser, ValueEnum};
 use tracing::{error, info, warn};
@@ -522,6 +524,37 @@ struct SandboxArgs {
         default_value_t = 0
     )]
     warm_pool_size: usize,
+    /// Mount a thread-scoped durable state volume (PVC) into every session
+    /// sandbox, so harness conversation state survives sandbox pause,
+    /// reclamation, and replacement. Stateful sessions always cold-start
+    /// (warm sandboxes cannot mount the thread's volume after boot).
+    #[arg(
+        long = "session-sandbox-state-enabled",
+        env = "SESSION_SANDBOX_STATE_ENABLED",
+        default_value_t = false
+    )]
+    sandbox_state_enabled: bool,
+    /// Storage request for each thread's state volume.
+    #[arg(
+        long = "session-sandbox-state-size",
+        env = "SESSION_SANDBOX_STATE_SIZE",
+        default_value = "1Gi"
+    )]
+    sandbox_state_size: String,
+    /// Storage class for state volumes; unset uses the cluster default.
+    #[arg(
+        long = "session-sandbox-state-storage-class",
+        env = "SESSION_SANDBOX_STATE_STORAGE_CLASS"
+    )]
+    sandbox_state_storage_class: Option<String>,
+    /// Mount path for the state volume inside the sandbox. Must match the
+    /// sandbox entrypoint's `$CENTAUR_STATE_DIR` convention.
+    #[arg(
+        long = "session-sandbox-state-mount-path",
+        env = "SESSION_SANDBOX_STATE_MOUNT_PATH",
+        default_value = "/home/agent/state"
+    )]
+    sandbox_state_mount_path: String,
     #[arg(
         long = "session-sandbox-warm-pool-replenish-interval-secs",
         env = "SESSION_SANDBOX_WARM_POOL_REPLENISH_INTERVAL_SECS",
@@ -747,10 +780,18 @@ impl SandboxArgs {
                     self.kube_client().await?,
                     AgentSandboxConfig::try_from(self)?,
                 );
-                Ok(SandboxRuntime::backend_with_workload(
+                let mut runtime = SandboxRuntime::backend_with_workload(
                     Arc::new(backend),
                     self.container_workload_mode()?,
-                ))
+                );
+                if self.sandbox_state_enabled {
+                    runtime = runtime.with_session_state(SessionStateVolume {
+                        mount_path: self.sandbox_state_mount_path.clone(),
+                        size: self.sandbox_state_size.clone(),
+                        storage_class: self.sandbox_state_storage_class.clone(),
+                    });
+                }
+                Ok(runtime)
             }
         }
     }

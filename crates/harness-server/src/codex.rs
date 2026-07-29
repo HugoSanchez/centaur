@@ -235,13 +235,12 @@ fn run_codex_user_turn<W: Write>(
 ) -> Result<()> {
     let (model, model_provider) = model_and_provider;
     if thread_id.is_none() {
-        *thread_id = Some(start_or_resume_thread(
-            codex,
-            stdout,
-            request_id,
-            &model_provider,
-            traceparent,
-        )?);
+        let started =
+            start_or_resume_thread(codex, stdout, request_id, &model_provider, traceparent)?;
+        // Persist the codex thread id on the state volume so a replacement
+        // sandbox resumes this conversation instead of starting fresh.
+        crate::session_persist::store(crate::HarnessKind::Codex, &started);
+        *thread_id = Some(started);
         *thread_provider = Some(model_provider.clone());
     } else if let (Some(requested), Some(pinned)) =
         (requested_provider.as_deref(), thread_provider.as_deref())
@@ -337,9 +336,17 @@ fn start_or_resume_thread<W: Write>(
     traceparent: Option<&str>,
 ) -> Result<String> {
     let cwd = env::current_dir()?.display().to_string();
-    let resume = env::var("CODEX_CONTINUE_THREAD_ID")
+    let mut resume = env::var("CODEX_CONTINUE_THREAD_ID")
         .or_else(|_| env::var("AMP_CONTINUE_THREAD_ID"))
         .unwrap_or_default();
+    if resume.trim().is_empty() {
+        // No operator-supplied continue id: resume the thread persisted on the
+        // state volume, if its rollout files survived sandbox replacement.
+        if let Some(persisted) = crate::session_persist::load(crate::HarnessKind::Codex) {
+            eprintln!("resuming persisted codex thread {persisted}");
+            resume = persisted;
+        }
+    }
     let (method, params) = if resume.trim().is_empty() {
         (
             "thread/start",
