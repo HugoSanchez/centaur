@@ -71,7 +71,9 @@ rules:
     verbs: ["create", "delete", "get", "list", "patch", "watch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["delete", "get", "list", "watch"]
+    # "create" is needed for thread-scoped session state volumes
+    # (sandbox.stateVolume.enabled / SESSION_SANDBOX_STATE_ENABLED).
+    verbs: ["create", "delete", "get", "list", "watch"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["create", "delete", "get", "list", "patch", "watch"]
