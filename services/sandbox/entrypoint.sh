@@ -416,6 +416,41 @@ fi
 
 # Persona prompt injection is done by the API when it writes AGENTS_BASE.md.
 
+# Personal identity: fetched from the instance's memoryd and injected into
+# AGENTS.md (all harnesses read it: claude via --append-system-prompt-file,
+# codex/amp natively). Best-effort: no memoryd -> no block, agent still works.
+IDENTITY_URL="${CENTAUR_IDENTITY_URL:-}"
+if [ -n "$IDENTITY_URL" ]; then
+    start='<!-- centaur:identity:start -->'
+    end='<!-- centaur:identity:end -->'
+    tmp="$(mktemp)"
+    : > "$tmp"
+    if [ -f "$TARGET_PROMPT" ]; then
+        # Drop any previous managed block, keep everything else.
+        awk -v s="$start" -v e="$end" 'index($0,s){skip=1} !skip{print} index($0,e){skip=0}' "$TARGET_PROMPT" > "$tmp"
+    fi
+    # Retry briefly: NetworkPolicy rules for a freshly created pod can take a
+    # few seconds to be programmed (observed on k3s/kube-router), and identity
+    # is worth a short wait at boot.
+    identity=""
+    for _attempt in 1 2 3; do
+        identity="$(curl -fsS -m 4 --noproxy '*' "$IDENTITY_URL" 2>/dev/null || true)"
+        [ -n "$identity" ] && break
+        sleep 2
+    done
+    if [ -n "$identity" ]; then
+        {
+            printf '%s\n' "$start"
+            printf '%s\n' "$identity"
+            printf '%s\n' "$end"
+            cat "$tmp" 2>/dev/null
+        } > "$TARGET_PROMPT"
+    elif [ -f "$TARGET_PROMPT" ]; then
+        cp "$tmp" "$TARGET_PROMPT"
+    fi
+    rm -f "$tmp"
+fi
+
 # Switch to workspace so the harness reads workspace/AGENTS.md (with persona overlay)
 cd "$WORKSPACE_DIR"
 

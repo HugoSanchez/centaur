@@ -72,6 +72,23 @@ cat notes.md | ~/bin/memory write "project/pilot" --title "Acme pilot"
 
 A write reports whether the page was `created` or `updated`. Confirm briefly to the user only when they explicitly asked you to remember something ("Saved.").
 
+## Your identity pages (system prompt)
+
+The "Who you are working for" block in your system prompt is rendered from two
+memory pages you own: `identity/agent` (how you should operate for this user)
+and `identity/user` (who they are: role, company, projects, preferences,
+languages). Every new sandbox re-reads them - edits take effect on the next
+session.
+
+- When you learn a durable fact about the user (their role, a preference, a
+  correction like "I am not a lawyer"), UPDATE `identity/user` - read it
+  first, edit the relevant line, rewrite the whole page:
+  `~/bin/memory page identity/user --json` then `~/bin/memory write identity/user ...`
+- Keep each page under ~2500 chars: identity is a dense card, not an archive.
+  Details belong in ordinary memory pages (`profile/<person>`, `project/<x>`)
+  that identity can reference by slug.
+- Never store secrets/tokens in identity pages.
+
 ## Answering rules
 
 - When memory informs an answer, weave it in naturally and attribute it in HUMAN terms — the entry's title, source, and date (e.g. "your All-Hands meeting notes from July 8", "a Slack thread in #eng-cloud on July 9", "the *Prover Network Services Agreement* Google Doc" — include its link when the entry carries one). NEVER show raw internal refs like `doc:1843` to the user; those ids exist only for your own follow-up `memory page` reads.
