@@ -187,7 +187,18 @@ pub(crate) fn run_app_server<H: HarnessServer>(harness: &H) -> Result<()> {
 fn initial_blocks_thread_state<H: HarnessServer>(harness: &H) -> Result<ThreadState> {
     let cwd = env::current_dir()?;
     let params = ThreadStartParams::default();
-    Ok(harness.thread_state(&params, cwd))
+    let mut state = harness.thread_state(&params, cwd);
+    // A replacement sandbox starts a fresh harness-server, but the previous
+    // conversation's files survive on the state volume. Seed the persisted
+    // session id so the first turn resumes natively instead of starting a
+    // brand-new conversation.
+    if state.harness_session_id.is_none() {
+        if let Some(session_id) = session_persist::load(harness.kind()) {
+            eprintln!("resuming persisted harness session {session_id}");
+            state.harness_session_id = Some(session_id);
+        }
+    }
+    Ok(state)
 }
 
 fn run_blocks_turn<H: HarnessServer, W: Write>(
