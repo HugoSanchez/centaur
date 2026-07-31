@@ -60,6 +60,7 @@ type SessionInputSink = FramedWrite<SandboxWrite, LinesCodec>;
 type ExecutionSpanRegistry = Arc<Mutex<HashMap<String, Span>>>;
 type SessionPipeMap = Arc<DashMap<String, SessionPipe>>;
 type SessionPipeOpenLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
+type SandboxEnsureLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
 
 #[derive(Clone)]
 pub struct SessionRuntime {
@@ -67,6 +68,7 @@ pub struct SessionRuntime {
     sandbox_runtime: SandboxRuntime,
     sandbox_pipes: SessionPipeMap,
     sandbox_pipe_open_locks: SessionPipeOpenLocks,
+    sandbox_ensure_locks: SandboxEnsureLocks,
     execution_spans: ExecutionSpanRegistry,
     iron_control: Option<SessionRegistrar>,
     warm_pool: Option<Arc<WarmPoolManager>>,
@@ -317,7 +319,8 @@ struct EventStreamState {
 
 struct SandboxReadyObservation<'a> {
     thread_key: &'a ThreadKey,
-    execution_id: &'a str,
+    // None = prestart (no execution row; the events FK column must stay NULL).
+    execution_id: Option<&'a str>,
     sandbox_id: &'a str,
     harness_type: &'a HarnessType,
     source: &'static str,
@@ -338,6 +341,7 @@ impl SessionRuntime {
             sandbox_runtime,
             sandbox_pipes: Arc::new(DashMap::new()),
             sandbox_pipe_open_locks: Arc::new(DashMap::new()),
+            sandbox_ensure_locks: Arc::new(DashMap::new()),
             execution_spans: Arc::new(Mutex::new(HashMap::new())),
             iron_control: None,
             warm_pool: None,
@@ -1029,7 +1033,7 @@ impl SessionRuntime {
                     session.persona_id.as_deref(),
                     session.sandbox_id.as_deref(),
                     session.iron_control_principal.as_deref(),
-                    &execution.execution_id,
+                    Some(&execution.execution_id),
                 )
                 .instrument(execution_trace_span.clone())
                 .await
@@ -1112,6 +1116,29 @@ impl SessionRuntime {
             );
         }
         result
+    }
+
+    /// Boot (or resume) the session's sandbox without running an execution,
+    /// so the first turn of a fresh thread lands on an already-warm pod.
+    /// Meant for clients that know a conversation is about to start (Verso
+    /// calls it when a chat is opened, before the user finishes typing).
+    /// The per-thread ensure lock serializes this with execute: a racing
+    /// first execution waits, re-reads the stored sandbox id, and reuses the
+    /// prestarted sandbox instead of creating a second one.
+    pub async fn prestart_session_sandbox(
+        &self,
+        thread_key: &ThreadKey,
+    ) -> Result<String, SessionRuntimeError> {
+        let session = self.store.get_session(thread_key).await?;
+        self.ensure_session_sandbox(
+            thread_key,
+            &session.harness_type,
+            session.persona_id.as_deref(),
+            session.sandbox_id.as_deref(),
+            session.iron_control_principal.as_deref(),
+            None,
+        )
+        .await
     }
 
     async fn record_execution_failure(
@@ -1349,24 +1376,46 @@ impl SessionRuntime {
         persona_id: Option<&str>,
         existing_sandbox_id: Option<&str>,
         iron_control_principal: Option<&str>,
-        execution_id: &str,
+        // None = prestart (no execution row exists; session_events.execution_id
+        // has an FK, so prestart events must carry NULL).
+        execution_id: Option<&str>,
     ) -> Result<String, SessionRuntimeError> {
+        let execution_label = execution_id.unwrap_or("prestart");
+        // The Option goes into session_events.execution_id (FK column); the
+        // label shadows the name so spans/logs/payloads below read unchanged.
+        let execution_column = execution_id;
+        let execution_id = execution_label;
         let span = info_span!(
             "centaur.api_rs.sandbox.ensure",
             component = COMPONENT_SESSION_RUNTIME,
             event = "sandbox_ensure",
             "centaur.thread_key" = thread_key.as_str(),
-            "centaur.execution_id" = execution_id,
+            "centaur.execution_id" = execution_label,
             "centaur.sandbox_id" = tracing::field::Empty,
             thread_key = %thread_key,
-            execution_id,
+            execution_id = execution_label,
             sandbox_id = tracing::field::Empty,
             existing_sandbox_id = existing_sandbox_id.unwrap_or(""),
             iron_control_principal_present = iron_control_principal.is_some(),
             persona_id = persona_id.unwrap_or(""),
         );
         let ensure_started = Instant::now();
+        // One sandbox ensure at a time per thread: a prestart and the thread's
+        // first execute may arrive near-simultaneously, and without this they
+        // would both cold-create a pod against the same state volume. The
+        // loser of the race waits, then reuses the winner's sandbox.
+        let ensure_lock = self
+            .sandbox_ensure_locks
+            .entry(thread_key.as_str().to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _ensure_guard = ensure_lock.lock().await;
         let result = async {
+            // Re-read the stored sandbox id under the lock: if a concurrent
+            // prestart/execute created the sandbox while we waited, the
+            // caller's snapshot is stale and we must reuse, not re-create.
+            let stored_sandbox_id = self.store.get_session(thread_key).await?.sandbox_id;
+            let existing_sandbox_id = stored_sandbox_id.as_deref().or(existing_sandbox_id);
             let persona_context = self.resolve_stored_persona(persona_id, harness_type)?;
             let mut spec = (self.sandbox_runtime.spec_factory)(
                 thread_key,
@@ -1405,7 +1454,7 @@ impl SessionRuntime {
                                 let ready_duration = ensure_started.elapsed();
                                 self.record_sandbox_ready(SandboxReadyObservation {
                                     thread_key,
-                                    execution_id,
+                                    execution_id: execution_column,
                                     sandbox_id,
                                     harness_type,
                                     source: "reused",
@@ -1436,7 +1485,7 @@ impl SessionRuntime {
                                         self.store
                                             .append_event(
                                                 thread_key,
-                                                Some(execution_id),
+                                                execution_column,
                                                 "session.sandbox_resumed",
                                                 json!({
                                                     "execution_id": execution_id,
@@ -1447,7 +1496,7 @@ impl SessionRuntime {
                                             .await?;
                                         self.record_sandbox_ready(SandboxReadyObservation {
                                             thread_key,
-                                            execution_id,
+                                            execution_id: execution_column,
                                             sandbox_id,
                                             harness_type,
                                             source: "resumed",
@@ -1481,7 +1530,7 @@ impl SessionRuntime {
                                         self.store
                                             .append_event(
                                                 thread_key,
-                                                Some(execution_id),
+                                                execution_column,
                                                 "session.sandbox_resume_failed",
                                                 json!({
                                                     "execution_id": execution_id,
@@ -1548,7 +1597,7 @@ impl SessionRuntime {
                     self.store
                         .append_event(
                             thread_key,
-                            Some(execution_id),
+                            execution_column,
                             "session.sandbox_stale_capabilities",
                             json!({
                                 "execution_id": execution_id,
@@ -1616,7 +1665,7 @@ impl SessionRuntime {
                             .await?;
                         self.record_sandbox_ready(SandboxReadyObservation {
                             thread_key,
-                            execution_id,
+                            execution_id: execution_column,
                             sandbox_id: sandbox_id.as_str(),
                             harness_type,
                             source: "warm_pool",
@@ -1670,7 +1719,7 @@ impl SessionRuntime {
                 .await?;
             self.record_sandbox_ready(SandboxReadyObservation {
                 thread_key,
-                execution_id,
+                execution_id: execution_column,
                 sandbox_id: handle.id.as_str(),
                 harness_type,
                 source: "cold_create",
@@ -1722,12 +1771,13 @@ impl SessionRuntime {
         let ready_duration_ms = duration_millis_u64(ready_duration);
         let startup_duration_ms = startup_duration.map(duration_millis_u64).unwrap_or(0);
         let sandbox_started_for_request = startup_duration.is_some();
+        let execution_label = execution_id.unwrap_or("prestart");
 
         if let Err(error) = self
             .store
             .append_event(
                 thread_key,
-                Some(execution_id),
+                execution_id,
                 "session.sandbox_ready",
                 json!({
                     "execution_id": execution_id,
@@ -1746,7 +1796,7 @@ impl SessionRuntime {
                 component = COMPONENT_SESSION_RUNTIME,
                 event = "sandbox_ready_event_append_failed",
                 thread_key = %thread_key,
-                execution_id,
+                execution_id = execution_label,
                 sandbox_id,
                 %error,
                 "failed to append sandbox ready event"
@@ -1757,7 +1807,7 @@ impl SessionRuntime {
             component = COMPONENT_SESSION_RUNTIME,
             event = "sandbox_ready",
             thread_key = %thread_key,
-            execution_id,
+            execution_id = execution_label,
             sandbox_id,
             harness_type = %harness_type,
             sandbox_ready_source = source,
@@ -6288,7 +6338,7 @@ mod adoption_tests {
                 None,
                 Some("sbx-old"),
                 None,
-                &execution_id,
+                Some(&execution_id),
             )
             .await
             .expect("resume failure should fall through to replacement");
@@ -6339,7 +6389,7 @@ mod adoption_tests {
                 None,
                 Some("sbx-legacy"),
                 None,
-                &execution_id,
+                Some(&execution_id),
             )
             .await
             .expect("legacy sandbox should be replaced");
@@ -6396,7 +6446,7 @@ mod adoption_tests {
                 None,
                 Some("sbx-current"),
                 None,
-                &execution_id,
+                Some(&execution_id),
             )
             .await
             .expect("current sandbox should be reused");

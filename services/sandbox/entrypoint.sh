@@ -431,12 +431,16 @@ if [ -n "$IDENTITY_URL" ]; then
     fi
     # Retry briefly: NetworkPolicy rules for a freshly created pod can take a
     # few seconds to be programmed (observed on k3s/kube-router), and identity
-    # is worth a short wait at boot.
+    # is worth a short wait at boot. Only TRANSPORT failures retry — a reply
+    # from memoryd is final even when empty (204 = no identity pages yet;
+    # retrying that just delays every boot).
     identity=""
     for _attempt in 1 2 3; do
-        identity="$(curl -fsS -m 4 --noproxy '*' "$IDENTITY_URL" 2>/dev/null || true)"
-        [ -n "$identity" ] && break
-        sleep 2
+        if identity="$(curl -fsS -m 4 --noproxy '*' "$IDENTITY_URL" 2>/dev/null)"; then
+            break
+        fi
+        identity=""
+        if [ "$_attempt" -lt 3 ]; then sleep 2; fi
     done
     if [ -n "$identity" ]; then
         {
