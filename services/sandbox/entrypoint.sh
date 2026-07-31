@@ -389,6 +389,11 @@ mkdir -p "$HOME_DIR/uploads"
 # ── Copy project skills into workspace (so `skill` tool discovers them) ──────
 WORKSPACE_DIR="$WORKSPACE_DIR" install-tool-shims --refresh-skills \
     || echo "warning: failed to reload Centaur skills" >&2
+# Skill refresh overwrites but never removes, so retired skills linger in
+# persisted (state-volume) workspaces. personal-memory moved into the system
+# prompt + first-class `memory` CLI — a stale copy would reintroduce the old
+# wrapper instructions.
+rm -rf "$WORKSPACE_DIR/.agents/skills/personal-memory"
 
 # ── Assemble system prompt from bind mounts ──────────────────────────────────
 # Base prompt: mounted as AGENTS_BASE.md when present, fallback to baked-in AGENTS.md.

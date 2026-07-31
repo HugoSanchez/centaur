@@ -150,6 +150,91 @@ def write(
     )
 
 
+identity_app = typer.Typer(
+    name="identity",
+    help=(
+        "The identity pages behind the 'Who you are working for' block of your "
+        "system prompt. `update` is THE way to record durable facts about the "
+        "user (role, employer, preferences, corrections) — one call, fixed slugs."
+    ),
+)
+app.add_typer(identity_app, name="identity")
+
+IDENTITY_SLUGS = {"user": "identity/user", "agent": "identity/agent"}
+IDENTITY_TITLES = {"user": "User identity", "agent": "Agent identity"}
+
+
+def _identity_slug(which: str) -> str:
+    slug = IDENTITY_SLUGS.get(which.strip().lower())
+    if slug is None:
+        console.print(f"[red]unknown identity page {which!r}; use 'user' or 'agent'[/red]")
+        raise typer.Exit(1)
+    return slug
+
+
+@identity_app.command("show")
+def identity_show(
+    which: str = typer.Argument("all", help="Which page: user, agent, or all."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Print the identity page(s) injected into the system prompt at session start."""
+    names = list(IDENTITY_SLUGS) if which.strip().lower() == "all" else [which]
+    client = MemoryClient()
+    results = {name: client.page(ref=_identity_slug(name)) for name in names}
+    if json_output:
+        _print_json(results)
+        return
+    for name, result in results.items():
+        slug = IDENTITY_SLUGS[name]
+        console.print(f"[bold]{slug}[/bold]")
+        if result.get("status") != "ok":
+            console.print("[yellow](empty — not written yet)[/yellow]")
+        else:
+            console.print(result.get("content") or "")
+        console.print()
+
+
+@identity_app.command("update")
+def identity_update(
+    which: str = typer.Argument(..., help="Which page: user (who they are) or agent (how to operate)."),
+    content: str | None = typer.Option(None, "--content", "-c", help="Full replacement content."),
+    file: str | None = typer.Option(None, "--file", "-f", help="Read content from a file."),
+    json_output: bool = typer.Option(False, "--json", help="Output raw JSON."),
+) -> None:
+    """Replace an identity page (content from --content, --file, or stdin).
+
+    The page is a dense card, not an archive: read it first with `identity show`,
+    edit the relevant line, and write the WHOLE page back. Keep it under ~2500
+    chars; details belong in ordinary pages (profile/<person>, project/<x>).
+    Takes effect at the next session start.
+    """
+    slug = _identity_slug(which)
+    if content is not None:
+        body = content
+    elif file is not None:
+        try:
+            with open(file, encoding="utf-8") as handle:
+                body = handle.read()
+        except OSError as exc:
+            console.print(f"[red]could not read {file}: {exc}[/red]")
+            raise typer.Exit(1) from exc
+    elif not sys.stdin.isatty():
+        body = sys.stdin.read()
+    else:
+        console.print("[red]provide content via --content, --file, or stdin[/red]")
+        raise typer.Exit(1)
+
+    result = MemoryClient().write(slug=slug, content=body, title=IDENTITY_TITLES[which.strip().lower()])
+    _require_ok(result)
+    if json_output:
+        _print_json(result)
+        return
+    console.print(
+        f"[green]{result.get('action', 'saved').capitalize()}[/green] "
+        f"[bold]{slug}[/bold] — takes effect next session"
+    )
+
+
 @app.command("list")
 def list_memory(
     limit: int = typer.Option(10, "--limit", "-n", help="Max recent pages."),
