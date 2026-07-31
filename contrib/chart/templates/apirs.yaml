@@ -71,7 +71,9 @@ rules:
     verbs: ["create", "delete", "get", "list", "patch", "watch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["delete", "get", "list", "watch"]
+    # "create" is needed for thread-scoped session state volumes
+    # (sandbox.stateVolume.enabled / SESSION_SANDBOX_STATE_ENABLED).
+    verbs: ["create", "delete", "get", "list", "watch"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["create", "delete", "get", "list", "patch", "watch"]
@@ -202,6 +204,19 @@ spec:
               value: {{ .Values.apiRs.sandboxCleanupIntervalSecs | quote }}
             - name: SESSION_SANDBOX_IDLE_CLEANUP_BACKSTOP_SECS
               value: {{ .Values.apiRs.sandboxIdleCleanupBackstopSecs | quote }}
+{{- if .Values.sandbox.stateVolume.enabled }}
+            # Thread-scoped durable state volumes: harness conversation state
+            # survives sandbox pause/reclaim/replacement. Stateful sessions
+            # always cold-start (warm sandboxes cannot mount them post-boot).
+            - name: SESSION_SANDBOX_STATE_ENABLED
+              value: "true"
+            - name: SESSION_SANDBOX_STATE_SIZE
+              value: {{ .Values.sandbox.stateVolume.size | quote }}
+{{- if .Values.sandbox.stateVolume.storageClassName }}
+            - name: SESSION_SANDBOX_STATE_STORAGE_CLASS
+              value: {{ .Values.sandbox.stateVolume.storageClassName | quote }}
+{{- end }}
+{{- end }}
             - name: SESSION_SANDBOX_K8S_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: SESSION_SANDBOX_IMAGE

@@ -46,6 +46,16 @@ pub struct SlackThreadContext {
     pub thread_ts: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct PrestartSessionResponse {
+    pub ok: bool,
+    pub thread_key: ThreadKey,
+    /// "starting" — the sandbox boot continues in the background; a
+    /// subsequent execute reuses it (or waits on the per-thread ensure lock
+    /// if the boot is still in flight).
+    pub sandbox: &'static str,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AppendMessagesRequest {
     pub messages: Vec<SessionMessageInput>,

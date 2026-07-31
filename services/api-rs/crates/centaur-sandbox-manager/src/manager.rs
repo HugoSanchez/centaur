@@ -249,6 +249,20 @@ where
             .await
     }
 
+    /// Ensure a named durable volume exists for sandboxes to mount by claim
+    /// name. Independent of any sandbox lifecycle; never deleted by
+    /// [`SandboxManager::stop`].
+    pub async fn ensure_named_volume(
+        &self,
+        name: &str,
+        size: &str,
+        storage_class: Option<&str>,
+    ) -> SandboxResult<()> {
+        self.backend
+            .ensure_named_volume(name, size, storage_class)
+            .await
+    }
+
     pub async fn reconcile_one(&self, id: &SandboxId) -> SandboxResult<ReconcileOutcome> {
         let Some(desired) = self.store.get(id) else {
             return Ok(ReconcileOutcome::Drift(DriftReason::NoDesiredState));

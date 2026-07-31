@@ -110,6 +110,12 @@ def _embedder_url() -> str:
     return value
 
 
+# The sandbox proxy is CONNECT-only and 405s plain HTTP; the embedder is reached
+# over a direct in-cluster NetworkPolicy path, so the embed call must never
+# consult HTTP(S)_PROXY env vars.
+_EMBED_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _embed_texts(url: str, inputs: list[str]) -> list[list[float]]:
     """POST to a HuggingFace text-embeddings-inference `/embed` endpoint."""
     endpoint = url.rstrip("/") + "/embed"
@@ -120,7 +126,7 @@ def _embed_texts(url: str, inputs: list[str]) -> list[list[float]]:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=EMBED_TIMEOUT_SECONDS) as response:
+    with _EMBED_OPENER.open(request, timeout=EMBED_TIMEOUT_SECONDS) as response:
         data = json.loads(response.read())
     if not isinstance(data, list) or not data:
         raise ValueError("embedder returned an empty or malformed response")

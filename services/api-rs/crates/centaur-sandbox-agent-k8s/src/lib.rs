@@ -451,6 +451,49 @@ impl SandboxBackend for AgentSandboxBackend {
         self.assign_proxy_principal(id, principal_id).await
     }
 
+    async fn ensure_named_volume(
+        &self,
+        name: &str,
+        size: &str,
+        storage_class: Option<&str>,
+    ) -> SandboxResult<()> {
+        let pvcs = self.persistent_volume_claims();
+        match pvcs.get_opt(name).await {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(err) => return Err(map_kube_error("get named volume", err)),
+        }
+        let mut pvc_spec = json!({
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {
+                "requests": {
+                    "storage": size,
+                },
+            },
+        });
+        insert_optional(
+            &mut pvc_spec,
+            "storageClassName",
+            storage_class.map(str::to_owned),
+        );
+        let pvc: PersistentVolumeClaim = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {
+                "name": name,
+                "labels": { MANAGED_BY_LABEL: MANAGED_BY_VALUE },
+            },
+            "spec": pvc_spec,
+        }))
+        .map_err(|err| SandboxError::InvalidSpec(format!("invalid named volume spec: {err}")))?;
+        match pvcs.create(&PostParams::default(), &pvc).await {
+            Ok(_) => Ok(()),
+            // Lost the create race to a concurrent ensure: the volume exists.
+            Err(Error::Api(api_error)) if api_error.code == 409 => Ok(()),
+            Err(err) => Err(map_kube_error("create named volume", err)),
+        }
+    }
+
     async fn pause(&self, id: &SandboxId) -> SandboxResult<()> {
         self.patch_sandbox_merge(id, sandbox_pause_patch(jiff::Timestamp::now()))
             .await

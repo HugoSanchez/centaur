@@ -1,6 +1,6 @@
 [project]
 name = "memory"
-description = "The user's personal memory: hybrid BM25 + embedding search over their history (email, chat, meeting notes, docs) and agent-written pages. Search this BEFORE web search or other tools for questions about the user's history, work, people, projects, decisions, or preferences. Write durable new facts as pages. IMPORTANT: the repo checkout is read-only; run ONLY via the symlink+uv pattern in this package's README.md (uv --with deps, never --with . or a venv here)."
+description = "The user's personal memory: hybrid BM25 + embedding search over their history (email, chat, meeting notes, docs) and agent-written pages. Search this BEFORE web search or other tools for questions about the user's history, work, people, projects, decisions, or preferences. Write durable new facts as pages; record durable facts about the user themselves with `memory identity update`."
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [

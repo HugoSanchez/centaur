@@ -66,6 +66,23 @@ pub trait SandboxBackend: Send + Sync {
         })
     }
 
+    /// Ensure a named durable volume exists that sandbox specs may mount via
+    /// [`crate::MountKind::NamedVolume`]. The volume is independent of any
+    /// sandbox lifecycle: it is never deleted by [`SandboxBackend::stop`], so a
+    /// replacement sandbox can re-mount the same state. Callers own naming and
+    /// eventual garbage collection.
+    async fn ensure_named_volume(
+        &self,
+        _name: &str,
+        _size: &str,
+        _storage_class: Option<&str>,
+    ) -> SandboxResult<()> {
+        Err(crate::SandboxError::Unsupported {
+            backend: self.name(),
+            operation: "ensure_named_volume",
+        })
+    }
+
     /// Suspend the sandbox while preserving any backend-supported runtime state.
     async fn pause(&self, id: &SandboxId) -> SandboxResult<()>;
 

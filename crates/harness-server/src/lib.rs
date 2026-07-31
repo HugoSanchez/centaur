@@ -5,6 +5,7 @@ pub mod codex;
 mod error;
 mod otel;
 mod server;
+mod session_persist;
 mod traits;
 mod turn;
 mod util;

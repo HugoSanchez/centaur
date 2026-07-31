@@ -30,9 +30,9 @@ use base64::{Engine as _, engine::general_purpose};
 use centaur_session_core::ThreadKey;
 use centaur_session_runtime::{
     ExecuteSessionInput, HarnessConflictPolicy, PersonaSummary, SandboxRuntime, SessionRuntime,
-    thread_trace_id, thread_trace_parent_span_id,
+    SessionRuntimeError, thread_trace_id, thread_trace_parent_span_id,
 };
-use centaur_session_sqlx::PgSessionStore;
+use centaur_session_sqlx::{PgSessionStore, SessionStoreError};
 use centaur_telemetry::{
     PrometheusHandle, http_status_class, prometheus_handle, record_http_request_finished,
     record_http_request_started, set_span_parent_trace,
@@ -59,8 +59,8 @@ use crate::{
     types::{
         AppendMessagesRequest, AppendMessagesResponse, CreateSessionRequest, CreateSessionResponse,
         EmitWorkflowEventRequest, EventsQuery, ExecuteSessionRequest, ExecuteSessionResponse,
-        ListWorkflowRunsQuery, OnHarnessConflict, SessionContextResponse, SessionSseEvent,
-        SlackThreadContext, stream_error_sse,
+        ListWorkflowRunsQuery, OnHarnessConflict, PrestartSessionResponse, SessionContextResponse,
+        SessionSseEvent, SlackThreadContext, stream_error_sse,
     },
 };
 
@@ -203,6 +203,10 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
         .route(
             "/api/session/{thread_key}/execute",
             post(execute_session).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/session/{thread_key}/prestart",
+            post(prestart_session),
         )
         .route("/api/session/{thread_key}/events", get(stream_events))
         .route("/api/sandboxes/drain", post(drain_sandboxes))
@@ -392,6 +396,63 @@ async fn create_or_get_session(
     Ok(Json(CreateSessionResponse {
         session: outcome.session,
         harness_switched: outcome.harness_switched,
+    }))
+}
+
+/// Create-or-get the session and kick off its sandbox boot WITHOUT running an
+/// execution. Fire-and-forget: the boot continues in a detached task (an
+/// aborted HTTP request must not kill a half-created pod), and the response
+/// returns immediately. Clients that know a conversation is about to start
+/// (Verso opens a chat before the user finishes typing) call this so the
+/// first execute lands on an already-warm sandbox. Stateful sessions cannot
+/// use the generic warm pool (the thread's state volume must be mounted at
+/// pod creation), so this per-thread prestart is their warm path.
+async fn prestart_session(
+    State(state): State<AppState>,
+    Path(raw_thread_key): Path<String>,
+    Json(request): Json<CreateSessionRequest>,
+) -> Result<Json<PrestartSessionResponse>, ApiError> {
+    let thread_key = ThreadKey::try_from(raw_thread_key)?;
+    let on_harness_conflict = match request.on_harness_conflict {
+        Some(OnHarnessConflict::Restart) => HarnessConflictPolicy::Restart,
+        Some(OnHarnessConflict::Reject) | None => HarnessConflictPolicy::Reject,
+    };
+    let runtime = state.runtime()?;
+    match runtime
+        .create_or_get_session(
+            &thread_key,
+            &request.harness_type,
+            request.persona_id.as_deref(),
+            request.metadata,
+            on_harness_conflict,
+        )
+        .await
+    {
+        Ok(_) => {}
+        // The thread already exists on a different harness. Prestart reads
+        // the STORED harness, so warming that sandbox is still exactly what
+        // the caller wants — don't fail the warm-up over the mismatch.
+        Err(SessionRuntimeError::Store(SessionStoreError::HarnessConflict { .. })) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let task_runtime = runtime.clone();
+    let task_thread_key = thread_key.clone();
+    tokio::spawn(async move {
+        if let Err(error) = task_runtime
+            .prestart_session_sandbox(&task_thread_key)
+            .await
+        {
+            tracing::warn!(
+                thread_key = %task_thread_key,
+                %error,
+                "session sandbox prestart failed"
+            );
+        }
+    });
+    Ok(Json(PrestartSessionResponse {
+        ok: true,
+        thread_key,
+        sandbox: "starting",
     }))
 }
 

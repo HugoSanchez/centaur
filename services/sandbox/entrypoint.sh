@@ -389,6 +389,11 @@ mkdir -p "$HOME_DIR/uploads"
 # ── Copy project skills into workspace (so `skill` tool discovers them) ──────
 WORKSPACE_DIR="$WORKSPACE_DIR" install-tool-shims --refresh-skills \
     || echo "warning: failed to reload Centaur skills" >&2
+# Skill refresh overwrites but never removes, so retired skills linger in
+# persisted (state-volume) workspaces. personal-memory moved into the system
+# prompt + first-class `memory` CLI — a stale copy would reintroduce the old
+# wrapper instructions.
+rm -rf "$WORKSPACE_DIR/.agents/skills/personal-memory"
 
 # ── Assemble system prompt from bind mounts ──────────────────────────────────
 # Base prompt: mounted as AGENTS_BASE.md when present, fallback to baked-in AGENTS.md.
@@ -415,6 +420,45 @@ elif [ -n "${CENTAUR_OVERLAY_DIR:-}" ] \
 fi
 
 # Persona prompt injection is done by the API when it writes AGENTS_BASE.md.
+
+# Personal identity: fetched from the instance's memoryd and injected into
+# AGENTS.md (all harnesses read it: claude via --append-system-prompt-file,
+# codex/amp natively). Best-effort: no memoryd -> no block, agent still works.
+IDENTITY_URL="${CENTAUR_IDENTITY_URL:-}"
+if [ -n "$IDENTITY_URL" ]; then
+    start='<!-- centaur:identity:start -->'
+    end='<!-- centaur:identity:end -->'
+    tmp="$(mktemp)"
+    : > "$tmp"
+    if [ -f "$TARGET_PROMPT" ]; then
+        # Drop any previous managed block, keep everything else.
+        awk -v s="$start" -v e="$end" 'index($0,s){skip=1} !skip{print} index($0,e){skip=0}' "$TARGET_PROMPT" > "$tmp"
+    fi
+    # Retry briefly: NetworkPolicy rules for a freshly created pod can take a
+    # few seconds to be programmed (observed on k3s/kube-router), and identity
+    # is worth a short wait at boot. Only TRANSPORT failures retry — a reply
+    # from memoryd is final even when empty (204 = no identity pages yet;
+    # retrying that just delays every boot).
+    identity=""
+    for _attempt in 1 2 3; do
+        if identity="$(curl -fsS -m 4 --noproxy '*' "$IDENTITY_URL" 2>/dev/null)"; then
+            break
+        fi
+        identity=""
+        if [ "$_attempt" -lt 3 ]; then sleep 2; fi
+    done
+    if [ -n "$identity" ]; then
+        {
+            printf '%s\n' "$start"
+            printf '%s\n' "$identity"
+            printf '%s\n' "$end"
+            cat "$tmp" 2>/dev/null
+        } > "$TARGET_PROMPT"
+    elif [ -f "$TARGET_PROMPT" ]; then
+        cp "$tmp" "$TARGET_PROMPT"
+    fi
+    rm -f "$tmp"
+fi
 
 # Switch to workspace so the harness reads workspace/AGENTS.md (with persona overlay)
 cd "$WORKSPACE_DIR"
