@@ -399,7 +399,12 @@ rm -rf "$WORKSPACE_DIR/.agents/skills/personal-memory"
 # Base prompt: mounted as AGENTS_BASE.md when present, fallback to baked-in AGENTS.md.
 # Org/persona overlays are mounted alongside the base prompt when present.
 TARGET_PROMPT="$WORKSPACE_DIR/AGENTS.md"
-if [ -f "$HOME_DIR/AGENTS_BASE.md" ]; then
+# Dev loop: CENTAUR_PROMPT_PATH points at a prompt file inside a repo mount,
+# which the repo-cache keeps fresh — prompt edits then ship via git push
+# (~30s), no image rebuild. Unset in production → mounted/baked prompt below.
+if [ -n "${CENTAUR_PROMPT_PATH:-}" ] && [ -f "$CENTAUR_PROMPT_PATH" ]; then
+    cp "$CENTAUR_PROMPT_PATH" "$TARGET_PROMPT"
+elif [ -f "$HOME_DIR/AGENTS_BASE.md" ]; then
     cp "$HOME_DIR/AGENTS_BASE.md" "$TARGET_PROMPT"
 elif [ -f "$HOME_DIR/AGENTS.md" ]; then
     cp "$HOME_DIR/AGENTS.md" "$TARGET_PROMPT"
