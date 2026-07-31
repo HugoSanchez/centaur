@@ -30,9 +30,9 @@ use base64::{Engine as _, engine::general_purpose};
 use centaur_session_core::ThreadKey;
 use centaur_session_runtime::{
     ExecuteSessionInput, HarnessConflictPolicy, PersonaSummary, SandboxRuntime, SessionRuntime,
-    thread_trace_id, thread_trace_parent_span_id,
+    SessionRuntimeError, thread_trace_id, thread_trace_parent_span_id,
 };
-use centaur_session_sqlx::PgSessionStore;
+use centaur_session_sqlx::{PgSessionStore, SessionStoreError};
 use centaur_telemetry::{
     PrometheusHandle, http_status_class, prometheus_handle, record_http_request_finished,
     record_http_request_started, set_span_parent_trace,
@@ -418,7 +418,7 @@ async fn prestart_session(
         Some(OnHarnessConflict::Reject) | None => HarnessConflictPolicy::Reject,
     };
     let runtime = state.runtime()?;
-    runtime
+    match runtime
         .create_or_get_session(
             &thread_key,
             &request.harness_type,
@@ -426,7 +426,15 @@ async fn prestart_session(
             request.metadata,
             on_harness_conflict,
         )
-        .await?;
+        .await
+    {
+        Ok(_) => {}
+        // The thread already exists on a different harness. Prestart reads
+        // the STORED harness, so warming that sandbox is still exactly what
+        // the caller wants — don't fail the warm-up over the mismatch.
+        Err(SessionRuntimeError::Store(SessionStoreError::HarnessConflict { .. })) => {}
+        Err(error) => return Err(error.into()),
+    }
     let task_runtime = runtime.clone();
     let task_thread_key = thread_key.clone();
     tokio::spawn(async move {
